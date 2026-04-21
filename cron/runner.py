@@ -41,13 +41,13 @@ def outbox_dir(user_id: str) -> Path:
 CLAUDE_BIN = Path.home() / ".local" / "bin" / "claude"
 
 
-def get_cron_session_id(user_id: str, topic: str) -> str | None:
+def get_cron_session_id(server_name: str, topic: str) -> str | None:
     """Look up cron-dedicated session ID from SQLite."""
     try:
         con = sqlite3.connect(str(SESSIONS_DB), timeout=5)
         row = con.execute(
-            "SELECT cron_session_id FROM topics WHERE user_id = ? AND name = ?",
-            (user_id, topic),
+            "SELECT cron_session_id FROM topics WHERE server_name = ? AND name = ?",
+            (server_name, topic),
         ).fetchone()
         con.close()
         return row[0] if row and row[0] else None
@@ -55,13 +55,13 @@ def get_cron_session_id(user_id: str, topic: str) -> str | None:
         return None
 
 
-def set_cron_session_id(user_id: str, topic: str, session_id: str):
+def set_cron_session_id(server_name: str, topic: str, session_id: str):
     """Save cron session ID to SQLite."""
     try:
         con = sqlite3.connect(str(SESSIONS_DB), timeout=5)
         con.execute(
-            "UPDATE topics SET cron_session_id = ? WHERE user_id = ? AND name = ?",
-            (session_id, user_id, topic),
+            "UPDATE topics SET cron_session_id = ? WHERE server_name = ? AND name = ?",
+            (session_id, server_name, topic),
         )
         con.commit()
         con.close()
@@ -125,6 +125,7 @@ def main():
     parser.add_argument("--script", required=True, help="Python script in cron/ to run")
     parser.add_argument("--topic", required=True, help="Telegram topic name")
     parser.add_argument("--user-id", required=True, help="User ID")
+    parser.add_argument("--server-name", required=True, help="Server (bot) name for topic lookups")
     parser.add_argument("--cron-name", default="unknown", help="Cron job name")
     args = parser.parse_args()
 
@@ -181,7 +182,7 @@ def _run_job(args, script_path):
         sys.exit(1)
 
     # 3. Run claude -p with stream-json (to capture tool_use events for file sending)
-    cron_session_id = get_cron_session_id(args.user_id, args.topic)
+    cron_session_id = get_cron_session_id(args.server_name, args.topic)
 
     # MCP config for send-file and send-text
     send_file_server = str(PROJECT_ROOT / "src" / "mcp" / "send-file-server.ts")

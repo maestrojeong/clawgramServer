@@ -15,7 +15,6 @@ import {
   getTopicModel,
   flushSessionCache,
 } from "@/telegram/forum-sessions";
-import { runServerMigration } from "@/telegram/server-migration";
 import { USERS_LOG_DIR, DM_SYSTEM_PROMPT, buildTopicSystemPrompt } from "@/core/config";
 import { logger } from "@/core/logger";
 
@@ -98,9 +97,9 @@ async function routeMessage(
       prompt,
       messageThreadId: msg.message_thread_id,
       systemPrompt: buildTopicSystemPrompt({
-        description: getTopicDescription(topicMatch.userId, topicMatch.topic.name),
+        description: getTopicDescription(topicMatch.topic.name),
       }),
-      model: getTopicModel(topicMatch.userId, topicMatch.topic.name) || undefined,
+      model: getTopicModel(topicMatch.topic.name) || undefined,
       effort: topicMatch.topic.effort,
     });
     return;
@@ -153,7 +152,7 @@ onSessionInject(async ({ userId, topicName, sessionId, prompt, messageThreadId, 
     prompt,
     messageThreadId,
     systemPrompt: buildTopicSystemPrompt({
-      description: getTopicDescription(userId, topicName),
+      description: getTopicDescription(topicName),
     }),
     from,
     depth,
@@ -178,9 +177,6 @@ bot.on("polling_error", async (err: any) => {
     await bot.startPolling();
   }
 });
-
-// --- One-time D1 migration: tag legacy topics with this server's SERVER_NAME ---
-await runServerMigration();
 
 // --- Sync meta agents and CLAUDE.md to all existing users at startup ---
 syncMetaAgents();

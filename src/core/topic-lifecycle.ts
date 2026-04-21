@@ -31,7 +31,7 @@ export async function deleteTopicWithArchive(params: DeleteTopicParams): Promise
   }
 
   // 2. Cleanup
-  removeTopic(userId, topicName);
+  removeTopic(topicName);
   clearQueryUsageAlert(userId, topicName);
 
   return { success: true };

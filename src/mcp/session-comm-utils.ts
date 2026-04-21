@@ -70,9 +70,9 @@ export function getTopicsForUser(): { [name: string]: TopicEntry } {
       message_thread_id: number;
       description: string | null;
       cwd: string | null;
-    }, [string, string]>(
-      "SELECT name, session_id, cron_session_id, message_thread_id, description, cwd FROM topics WHERE user_id = ? AND server_name = ?"
-    ).all(userId, SERVER_NAME);
+    }, string>(
+      "SELECT name, session_id, cron_session_id, message_thread_id, description, cwd FROM topics WHERE server_name = ?"
+    ).all(SERVER_NAME);
     const result: { [name: string]: TopicEntry } = {};
     for (const row of rows) {
       result[row.name] = {
@@ -117,8 +117,8 @@ export function getForumInfo(): { forumGroupId: number; messageThreadId: number 
   try {
     db.exec("PRAGMA busy_timeout = 3000");
     const row = db.query<{ forum_group_id: number; message_thread_id: number }, [string, string]>(
-      "SELECT forum_group_id, message_thread_id FROM topics WHERE user_id = ? AND name = ?"
-    ).get(userId, progressTopic);
+      "SELECT forum_group_id, message_thread_id FROM topics WHERE server_name = ? AND name = ?"
+    ).get(SERVER_NAME, progressTopic);
     _forumInfo = row ? { forumGroupId: row.forum_group_id, messageThreadId: row.message_thread_id } : null;
   } catch { _forumInfo = null; }
   finally { db.close(); }
@@ -279,8 +279,8 @@ export function getMcpConfig(): { enabled: string[] | null; extra: Record<string
   try {
     db.exec("PRAGMA busy_timeout = 3000");
     const row = db.query<{ mcp_enabled: string | null; mcp_extra: string | null }, [string, string]>(
-      "SELECT mcp_enabled, mcp_extra FROM topics WHERE user_id = ? AND name = ?"
-    ).get(userId, currentTopic);
+      "SELECT mcp_enabled, mcp_extra FROM topics WHERE server_name = ? AND name = ?"
+    ).get(SERVER_NAME, currentTopic);
     let enabled: string[] | null = null;
     let extra: Record<string, unknown> = {};
     try { if (row?.mcp_enabled) enabled = JSON.parse(row.mcp_enabled); } catch { console.error(`[session-comm] getMcpConfig: failed to parse mcp_enabled for topic "${currentTopic}"`); }
@@ -295,8 +295,8 @@ export function setCurrentTopicDescription(description: string) {
   try {
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA busy_timeout = 5000");
-    db.query("UPDATE topics SET description = ? WHERE user_id = ? AND name = ?").run(
-      description, userId, currentTopic
+    db.query("UPDATE topics SET description = ? WHERE server_name = ? AND name = ?").run(
+      description, SERVER_NAME, currentTopic
     );
   } finally { db.close(); }
 }
@@ -307,13 +307,13 @@ export function setMcpConfig(enabled?: string[] | null, extra?: Record<string, u
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA busy_timeout = 5000");
     if (enabled !== undefined) {
-      db.query("UPDATE topics SET mcp_enabled = ? WHERE user_id = ? AND name = ?").run(
-        enabled !== null ? JSON.stringify(enabled) : null, userId, currentTopic
+      db.query("UPDATE topics SET mcp_enabled = ? WHERE server_name = ? AND name = ?").run(
+        enabled !== null ? JSON.stringify(enabled) : null, SERVER_NAME, currentTopic
       );
     }
     if (extra !== undefined) {
-      db.query("UPDATE topics SET mcp_extra = ? WHERE user_id = ? AND name = ?").run(
-        JSON.stringify(extra), userId, currentTopic
+      db.query("UPDATE topics SET mcp_extra = ? WHERE server_name = ? AND name = ?").run(
+        JSON.stringify(extra), SERVER_NAME, currentTopic
       );
     }
   } finally { db.close(); }

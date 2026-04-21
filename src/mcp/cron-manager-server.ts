@@ -64,14 +64,14 @@ const CRON_DIR = resolve(PROJECT_ROOT, "cron");
 const RUNNER_PY = resolve(CRON_DIR, "runner.py");
 const SESSIONS_DB = resolve(PROJECT_ROOT, "data", "sessions.db");
 
-function getUserTopics(uid: string): string[] {
+function getServerTopics(): string[] {
   if (!existsSync(SESSIONS_DB)) return [];
   const db = new Database(SESSIONS_DB, { readonly: true });
   try {
     db.exec("PRAGMA busy_timeout = 3000");
-    const rows = db.query<{ name: string }, [string, string]>(
-      "SELECT name FROM topics WHERE user_id = ? AND server_name = ?"
-    ).all(uid, SERVER_NAME);
+    const rows = db.query<{ name: string }, string>(
+      "SELECT name FROM topics WHERE server_name = ?"
+    ).all(SERVER_NAME);
     return rows.map(r => r.name);
   } catch {
     return [];
@@ -165,8 +165,8 @@ server.tool(
       };
     }
 
-    // Validate topic exists for this user
-    const validTopics = getUserTopics(userId);
+    // Validate topic exists on this server
+    const validTopics = getServerTopics();
     if (validTopics.length > 0 && !validTopics.includes(topic)) {
       return {
         content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found for user ${userId}.\nAvailable topics: ${validTopics.join(", ")}\nUse one of the existing topic names.` }],
@@ -191,7 +191,7 @@ server.tool(
     }
 
     // runner.py handles: run script → wait for unlock → claude -p --resume → outbox
-    const cmd = `uv run ${shellQuote(RUNNER_PY)} --script ${shellQuote(script)} --topic ${shellQuote(topic)} --user-id ${shellQuote(userId)} --cron-name ${shellQuote(name)}`;
+    const cmd = `uv run ${shellQuote(RUNNER_PY)} --script ${shellQuote(script)} --topic ${shellQuote(topic)} --user-id ${shellQuote(userId)} --server-name ${shellQuote(SERVER_NAME)} --cron-name ${shellQuote(name)}`;
 
     try {
       await pm2([
@@ -281,7 +281,7 @@ server.tool(
   "List available Telegram topics for this user. Use these topic names when creating cron jobs.",
   {},
   async () => {
-    const topics = getUserTopics(userId);
+    const topics = getServerTopics();
     if (topics.length === 0) {
       return {
         content: [{ type: "text" as const, text: "No topics found. Create a topic in Telegram first." }],

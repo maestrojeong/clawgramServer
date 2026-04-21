@@ -84,11 +84,11 @@ export async function flushSessionInbox() {
 
         const _sessionInjectHandler = getSessionInjectHandler();
 
-        const topic = getTopicByName(userId, topicName);
+        const topic = getTopicByName(topicName);
         if (!topic) {
           logger.warn({ userId, topicName }, "session-inbox: Topic not found, dropping entry");
           if (!entry.command && entry.from) {
-            const senderTopic = getTopicByName(userId, entry.from);
+            const senderTopic = getTopicByName(entry.from);
             if (senderTopic) {
               sendMsg(senderTopic.forumGroupId, `[← ${topicName}]\n(오류: 토픽 "${topicName}"을 찾을 수 없습니다)`, {
                 message_thread_id: senderTopic.messageThreadId,
@@ -101,7 +101,7 @@ export async function flushSessionInbox() {
         if (!topic.sessionId) {
           logger.warn({ userId, topicName }, "session-inbox: No sessionId, dropping entry");
           if (!entry.command && entry.from) {
-            const senderTopic = getTopicByName(userId, entry.from);
+            const senderTopic = getTopicByName(entry.from);
             if (senderTopic) {
               sendMsg(senderTopic.forumGroupId, `[← ${topicName}]\n(오류: "${topicName}" 세션이 아직 초기화되지 않았습니다. 해당 토픽에 먼저 메시지를 보내주세요)`, {
                 message_thread_id: senderTopic.messageThreadId,
@@ -144,7 +144,7 @@ export async function flushSessionInbox() {
         if (entry.depth == null || entry.chain == null) {
           logger.error({ userId, topicName, entry }, "session-inbox: ask_session entry missing depth/chain, dropping");
           if (entry.from) {
-            const senderTopic = getTopicByName(userId, entry.from);
+            const senderTopic = getTopicByName(entry.from);
             if (senderTopic) {
               sendMsg(senderTopic.forumGroupId, `[${topicName} 오류] ask_session 응답 실패: depth/chain 정보 누락`, { message_thread_id: senderTopic.messageThreadId }).catch(() => {});
             }
@@ -164,7 +164,7 @@ export async function flushSessionInbox() {
           "session-inbox: Injecting via fork");
 
         // Show outgoing request in sender's topic (await to ensure [→] appears before [←])
-        const senderTopic = getTopicByName(userId, entry.from);
+        const senderTopic = getTopicByName(entry.from);
         if (senderTopic) {
           await sendSplitMsg(senderTopic.forumGroupId, `[→ ${topicName}]\n${entry.message}`, { message_thread_id: senderTopic.messageThreadId }).catch(
             (e) => logger.warn({ err: e }, "session-inbox: failed to send outgoing notification to sender")

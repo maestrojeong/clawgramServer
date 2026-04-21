@@ -22,3 +22,4 @@ bun.lock
 
 # Misc
 scrape_gn.js
+tmp/

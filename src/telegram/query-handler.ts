@@ -211,7 +211,7 @@ function detectSessionExpiry(
       return "dm-retry";
     }
   } else {
-    clearSessionForTopic(userId, topicName);
+    clearSessionForTopic(topicName);
     logger.info({ userId, topicName }, "Forum session expired, cleared and will retry");
     return "forum-retry";
   }
@@ -329,7 +329,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
 
   try {
     const topicCwd = params.sessionType !== "dm" && params.sessionType !== "ephemeral"
-      ? getTopicCwd(userId, topicName)
+      ? getTopicCwd(topicName)
       : null;
     const rawCwd = expandHome(params.cwd ?? null) || expandHome(topicCwd) || homedir();
     const userCwd = isAllowedCwd(rawCwd) ? rawCwd : homedir();
@@ -340,7 +340,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
 
     const mcpConfig =
       params.sessionType !== "dm" && params.sessionType !== "ephemeral"
-        ? getTopicMcpConfig(userId, topicName)
+        ? getTopicMcpConfig(topicName)
         : { enabled: null, extra: {} };
 
     let textBuffer = "";
@@ -390,7 +390,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
           } else if (params.sessionType === "dm") {
             setDmSessionId(userId, event.sessionId);
           } else if (!isInject) {
-            setSessionForTopic(userId, topicName, event.sessionId);
+            setSessionForTopic(topicName, event.sessionId);
           }
           break;
 
@@ -495,7 +495,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
     writeLog({
       timestamp: new Date().toISOString(),
       userId,
-      sessionId: getSessionForTopic(userId, topicName) || null,
+      sessionId: getSessionForTopic(topicName) || null,
       session: topicName,
       prompt,
       response: finalResponse,
@@ -525,7 +525,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
     const senderName = params.from;
     const depth = params.depth ?? 0;
     if (senderName && senderName !== "user" && depth > 0 && control.abortReason === AbortReason.None && finalResponse && !params.isCommand) {
-      const senderTopic = getTopicByName(userId, senderName);
+      const senderTopic = getTopicByName(senderName);
       if (senderTopic?.sessionId) {
         const senderChain = (params.chain ?? []).slice(0, -1);
         const injectPrompt = `[${topicName} 세션 응답 (depth: ${depth - 1}/5)]\n${finalResponse}`;
@@ -541,7 +541,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
             prompt: injectPrompt,
             messageThreadId: senderTopic.messageThreadId,
             systemPrompt: buildTopicSystemPrompt({
-              description: getTopicDescription(userId, senderName),
+              description: getTopicDescription(senderName),
             }),
             from: topicName,
             depth: depth - 1,
@@ -580,7 +580,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
     const senderName = params.from;
     const depth = params.depth ?? 0;
     if (control.abortReason === AbortReason.External && senderName && senderName !== "user" && depth > 0 && !pendingInject && !params.isCommand) {
-      const senderTopic = getTopicByName(userId, senderName);
+      const senderTopic = getTopicByName(senderName);
       if (senderTopic) {
         sendMsg(senderTopic.forumGroupId, `[← ${topicName}]\n(abort됨: 외부 중단 요청으로 응답을 받을 수 없습니다)`, {
           message_thread_id: senderTopic.messageThreadId,

@@ -63,7 +63,7 @@ function getUserConfig(): UserConfig | null {
       effort: string | null;
       mcp_enabled: string | null;
       mcp_extra: string | null;
-    }, [string, string]>("SELECT name, message_thread_id, forum_group_id, session_id, created_at, description, model, cwd, effort, mcp_enabled, mcp_extra FROM topics WHERE user_id = ? AND server_name = ?").all(userId, SERVER_NAME);
+    }, string>("SELECT name, message_thread_id, forum_group_id, session_id, created_at, description, model, cwd, effort, mcp_enabled, mcp_extra FROM topics WHERE server_name = ?").all(SERVER_NAME);
 
     const topics: { [name: string]: TopicEntry } = {};
     for (const row of topicRows) {

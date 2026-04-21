@@ -52,7 +52,7 @@ export async function flushCronOutbox() {
           continue;
         }
 
-        const topic = getTopicByName(userId, topicName);
+        const topic = getTopicByName(topicName);
         if (!topic) {
           logger.warn({ userId, topicName }, "cron-outbox: Topic not found, dropping entry");
           continue;
@@ -62,7 +62,7 @@ export async function flushCronOutbox() {
 
         // Update cronSessionId via cache (prevents overwrite race condition)
         if (entry.newCronSessionId) {
-          setCronSessionForTopic(userId, topicName, entry.newCronSessionId as string);
+          setCronSessionForTopic(topicName, entry.newCronSessionId as string);
         }
 
         // Send files first, then text message

@@ -208,7 +208,7 @@ async function handleNewCommand(chatId: number, userId: number, text: string): P
     return;
   }
 
-  const existing = getTopicByName(userId, topicName);
+  const existing = getTopicByName(topicName);
   if (existing) {
     const link = getTopicLink(existing.forumGroupId, existing.messageThreadId);
     await sendMsg(chatId,
@@ -255,7 +255,7 @@ async function handleListCommand(chatId: number, userId: number): Promise<void> 
     return;
   }
 
-  const allTopics = getTopicNames(userId);
+  const allTopics = getTopicNames();
   if (allTopics.length === 0) {
     await sendMsg(chatId, "세션이 없습니다.\n/new <이름> 으로 생성하세요.");
     return;
@@ -264,7 +264,7 @@ async function handleListCommand(chatId: number, userId: number): Promise<void> 
   const sections: string[] = [];
   for (const gid of config.forumGroupIds) {
     const title = config.forumGroupTitles[String(gid)] || gid;
-    const topics = getAllTopicsForGroup(userId, gid);
+    const topics = getAllTopicsForGroup(gid);
     if (topics.length === 0) continue;
 
     const lines = topics.map((t) => {
@@ -290,7 +290,7 @@ async function handleDelCommand(chatId: number, userId: number, text: string): P
   }
   const topicName = withTopicPrefix(rawName);
 
-  const topic = getTopicByName(userId, topicName);
+  const topic = getTopicByName(topicName);
   if (!topic) {
     await sendMsg(chatId, `"${topicName}" 세션을 찾을 수 없습니다.`);
     return;
@@ -339,7 +339,7 @@ async function createTopicsWithRetry(
       try {
         if (attempt > 0) await delay(3000);
         const result = await bot.createForumTopic(groupId, topic.name) as unknown as ForumTopic;
-        updateTopicThreadId(userId, topic.name, result.message_thread_id, groupId);
+        updateTopicThreadId(topic.name, result.message_thread_id, groupId);
         created++;
         success = true;
         logger.info({ userId, topicName: topic.name, newThreadId: result.message_thread_id }, `${logTag}: created`);
@@ -359,7 +359,7 @@ async function createTopicsWithRetry(
  * Retry topics with stale thread_ids (when re-connecting to the same group).
  */
 async function retryStaleTopics(userId: number, groupId: number, notifyChatId: number): Promise<void> {
-  const topics = getAllTopicsForGroup(userId, groupId);
+  const topics = getAllTopicsForGroup(groupId);
   if (topics.length === 0) return;
 
   const staleTopics: typeof topics = [];

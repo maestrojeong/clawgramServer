@@ -29,6 +29,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS topics (
     user_id TEXT NOT NULL REFERENCES users(id),
     forum_group_id INTEGER NOT NULL,
+    server_name TEXT NOT NULL,
     name TEXT NOT NULL,
     message_thread_id INTEGER NOT NULL,
     session_id TEXT,
@@ -36,25 +37,89 @@ db.exec(`
     created_at TEXT NOT NULL,
     description TEXT,
     model TEXT,
+    cwd TEXT,
     effort TEXT CHECK (effort IN ('low', 'medium', 'high', 'max')),
-    PRIMARY KEY (user_id, name),
+    mcp_enabled TEXT,
+    mcp_extra TEXT,
+    PRIMARY KEY (server_name, forum_group_id, name),
     UNIQUE (forum_group_id, message_thread_id)
   );
 
   CREATE INDEX IF NOT EXISTS idx_topics_lookup ON topics(forum_group_id, message_thread_id);
 `);
 
-// Migrations: add new columns if they don't exist yet
+// Migrations: add new columns if they don't exist yet (for DBs created before these existed)
 try { db.exec("ALTER TABLE topics ADD COLUMN mcp_enabled TEXT"); } catch {}
 try { db.exec("ALTER TABLE topics ADD COLUMN mcp_extra TEXT"); } catch {}
 try { db.exec("ALTER TABLE topics ADD COLUMN cwd TEXT"); } catch {}
-// server_name: which bot/server owns this topic. Backfilled by runStartupServerMigration().
 try { db.exec("ALTER TABLE topics ADD COLUMN server_name TEXT"); } catch {}
 // Rename system_prompt_extra → description
 {
   const cols = db.query<{ name: string }, []>("PRAGMA table_info(topics)").all();
   if (cols.some(c => c.name === "system_prompt_extra")) {
     db.exec("ALTER TABLE topics RENAME COLUMN system_prompt_extra TO description");
+  }
+}
+
+// Migration: topics PK (user_id, name) → (server_name, forum_group_id, name).
+// Topics become shared within a group — user_id stays as creator metadata only.
+{
+  const row = db.query<{ sql: string }, []>(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='topics'"
+  ).get();
+  if (row?.sql.includes("PRIMARY KEY (user_id, name)")) {
+    logger.info("Migrating topics PK: (user_id, name) → (server_name, forum_group_id, name)");
+    db.transaction(() => {
+      db.query("UPDATE topics SET server_name = ? WHERE server_name IS NULL").run(SERVER_NAME);
+      type DupRow = { server_name: string; forum_group_id: number; name: string };
+      const dups = db.query<DupRow, []>(
+        "SELECT server_name, forum_group_id, name FROM topics GROUP BY server_name, forum_group_id, name HAVING COUNT(*) > 1"
+      ).all();
+      for (const d of dups) {
+        const rowids = db.query<{ rowid: number }, [string, number, string]>(
+          "SELECT rowid FROM topics WHERE server_name = ? AND forum_group_id = ? AND name = ? ORDER BY rowid"
+        ).all(d.server_name, d.forum_group_id, d.name);
+        // Keep the first, rename the rest with numeric suffix
+        for (let i = 1; i < rowids.length; i++) {
+          let suffix = i + 1;
+          let candidate = `${d.name}_${suffix}`;
+          while (db.query<{ n: number }, [string, number, string]>(
+            "SELECT COUNT(*) as n FROM topics WHERE server_name = ? AND forum_group_id = ? AND name = ?"
+          ).get(d.server_name, d.forum_group_id, candidate)!.n > 0) {
+            suffix++;
+            candidate = `${d.name}_${suffix}`;
+          }
+          db.query("UPDATE topics SET name = ? WHERE rowid = ?").run(candidate, rowids[i].rowid);
+          logger.warn({ original: d.name, renamed: candidate, forumGroupId: d.forum_group_id }, "Topic PK migration: renamed duplicate");
+        }
+      }
+      db.exec(`
+        CREATE TABLE topics_new (
+          user_id TEXT NOT NULL REFERENCES users(id),
+          forum_group_id INTEGER NOT NULL,
+          server_name TEXT NOT NULL,
+          name TEXT NOT NULL,
+          message_thread_id INTEGER NOT NULL,
+          session_id TEXT,
+          cron_session_id TEXT,
+          created_at TEXT NOT NULL,
+          description TEXT,
+          model TEXT,
+          cwd TEXT,
+          effort TEXT CHECK (effort IN ('low', 'medium', 'high', 'max')),
+          mcp_enabled TEXT,
+          mcp_extra TEXT,
+          PRIMARY KEY (server_name, forum_group_id, name),
+          UNIQUE (forum_group_id, message_thread_id)
+        );
+        INSERT INTO topics_new (user_id, forum_group_id, server_name, name, message_thread_id, session_id, cron_session_id, created_at, description, model, cwd, effort, mcp_enabled, mcp_extra)
+          SELECT user_id, forum_group_id, server_name, name, message_thread_id, session_id, cron_session_id, created_at, description, model, cwd, effort, mcp_enabled, mcp_extra FROM topics;
+        DROP TABLE topics;
+        ALTER TABLE topics_new RENAME TO topics;
+        CREATE INDEX IF NOT EXISTS idx_topics_lookup ON topics(forum_group_id, message_thread_id);
+      `);
+    })();
+    logger.info("Migration complete: topics PK");
   }
 }
 
@@ -149,42 +214,6 @@ export function flushSessionCache() {
   db.close();
 }
 
-// --- Server migration helpers (called from bot.ts startup) ---
-
-/** Topics with NULL server_name (legacy rows from before this server's prefix system). */
-export function getUnmigratedTopics(): { userId: number; forumGroupId: number; name: string; messageThreadId: number }[] {
-  const rows = db.query<{ user_id: string; forum_group_id: number; name: string; message_thread_id: number }, []>(
-    "SELECT user_id, forum_group_id, name, message_thread_id FROM topics WHERE server_name IS NULL"
-  ).all();
-  return rows.map(r => ({
-    userId: Number(r.user_id),
-    forumGroupId: r.forum_group_id,
-    name: r.name,
-    messageThreadId: r.message_thread_id,
-  }));
-}
-
-/**
- * Mark a legacy topic as owned by this server, optionally renaming it (DB only).
- * Used during D1 migration after Telegram editForumTopic succeeds.
- */
-export function migrateTopicToThisServer(userId: number, oldName: string, newName: string): void {
-  db.transaction(() => {
-    // If newName == oldName, just set server_name. Otherwise rename + set.
-    if (newName === oldName) {
-      db.query("UPDATE topics SET server_name = ? WHERE user_id = ? AND name = ? AND server_name IS NULL").run(
-        SERVER_NAME, String(userId), oldName
-      );
-    } else {
-      // Rename: handle (user_id, name) UNIQUE constraint by deleting any conflicting row first.
-      db.query("DELETE FROM topics WHERE user_id = ? AND name = ?").run(String(userId), newName);
-      db.query("UPDATE topics SET name = ?, server_name = ? WHERE user_id = ? AND name = ? AND server_name IS NULL").run(
-        newName, SERVER_NAME, String(userId), oldName
-      );
-    }
-  })();
-}
-
 // --- Helpers for JSON array/object columns ---
 
 function parseGroupIds(raw: string): number[] {
@@ -197,14 +226,14 @@ function parseGroupTitles(raw: string): Record<string, string> {
 
 // --- User config ---
 
-/** Get user's forum config (only topics owned by this server) */
+/** Get user's forum config — topics are shared across users within this server (not filtered by user_id) */
 export function getUserConfig(userId: number): UserForumConfig | null {
   const user = db.query<UserRow, string>("SELECT * FROM users WHERE id = ?").get(String(userId));
   if (!user) return null;
 
-  const topicRows = db.query<TopicRow, [string, string]>(
-    "SELECT * FROM topics WHERE user_id = ? AND server_name = ?"
-  ).all(String(userId), SERVER_NAME);
+  const topicRows = db.query<TopicRow, string>(
+    "SELECT * FROM topics WHERE server_name = ?"
+  ).all(SERVER_NAME);
   const topics: { [name: string]: ForumTopicInfo } = {};
   for (const row of topicRows) {
     topics[row.name] = rowToTopic(row);
@@ -268,7 +297,7 @@ export function addForumGroup(userId: number, groupId: number, groupTitle?: stri
   return true;
 }
 
-/** Remove a forum group from user's group list. Deletes associated topics. */
+/** Remove a forum group from user's group list. Topics are shared, so they're only dropped when no other user has the group connected. */
 export function removeForumGroup(userId: number, groupId: number): boolean {
   const existing = db.query<{ forum_group_ids: string; forum_group_titles: string }, string>(
     "SELECT forum_group_ids, forum_group_titles FROM users WHERE id = ?"
@@ -285,10 +314,17 @@ export function removeForumGroup(userId: number, groupId: number): boolean {
   delete titles[String(groupId)];
 
   db.transaction(() => {
-    db.query("DELETE FROM topics WHERE user_id = ? AND forum_group_id = ?").run(String(userId), groupId);
     db.query("UPDATE users SET forum_group_ids = ?, forum_group_titles = ? WHERE id = ?").run(
       JSON.stringify(ids), JSON.stringify(titles), String(userId)
     );
+    // Check if any other user still has this group; if not, topics are orphaned and we clean them up.
+    const otherUsers = db.query<{ forum_group_ids: string }, []>(
+      "SELECT forum_group_ids FROM users"
+    ).all();
+    const stillConnected = otherUsers.some(u => parseGroupIds(u.forum_group_ids).includes(groupId));
+    if (!stillConnected) {
+      db.query("DELETE FROM topics WHERE server_name = ? AND forum_group_id = ?").run(SERVER_NAME, groupId);
+    }
   })();
 
   logger.info({ userId, groupId }, "Forum group removed");
@@ -298,7 +334,7 @@ export function removeForumGroup(userId: number, groupId: number): boolean {
 
 // --- Topic management ---
 
-/** Add a topic for a user in a specific group (always tagged with this server's SERVER_NAME) */
+/** Add a topic. user_id is recorded as creator metadata; uniqueness is (server_name, forum_group_id, name). */
 export function addTopic(userId: number, groupId: number, name: string, messageThreadId: number, sessionId?: string, createdAt?: string) {
   // Ensure user exists
   db.query(`INSERT INTO users (id) VALUES (?) ON CONFLICT(id) DO NOTHING`).run(String(userId));
@@ -306,33 +342,31 @@ export function addTopic(userId: number, groupId: number, name: string, messageT
   db.query(`
     INSERT INTO topics (user_id, forum_group_id, name, message_thread_id, session_id, created_at, server_name)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(user_id, name) DO UPDATE SET
-      forum_group_id = excluded.forum_group_id,
+    ON CONFLICT(server_name, forum_group_id, name) DO UPDATE SET
       message_thread_id = excluded.message_thread_id,
       session_id = excluded.session_id,
-      created_at = excluded.created_at,
-      server_name = excluded.server_name
+      created_at = excluded.created_at
   `).run(String(userId), groupId, name, messageThreadId, sessionId ?? null, createdAt ?? new Date().toISOString(), SERVER_NAME);
 }
 
-/** Remove a topic */
-export function removeTopic(userId: number, name: string) {
-  db.query("DELETE FROM topics WHERE user_id = ? AND name = ?").run(String(userId), name);
+/** Remove a topic by name (any creator) */
+export function removeTopic(name: string) {
+  db.query("DELETE FROM topics WHERE server_name = ? AND name = ?").run(SERVER_NAME, name);
 }
 
 /** Get topic by name (this server only) */
-export function getTopicByName(userId: number, name: string): ForumTopicInfo | null {
-  const row = db.query<TopicRow, [string, string, string]>(
-    "SELECT * FROM topics WHERE user_id = ? AND name = ? AND server_name = ?"
-  ).get(String(userId), name, SERVER_NAME);
+export function getTopicByName(name: string): ForumTopicInfo | null {
+  const row = db.query<TopicRow, [string, string]>(
+    "SELECT * FROM topics WHERE name = ? AND server_name = ?"
+  ).get(name, SERVER_NAME);
   return row ? rowToTopic(row) : null;
 }
 
 /** Get topic by thread ID (this server only) */
-export function getTopicByThreadId(userId: number, threadId: number): ForumTopicInfo | null {
-  const row = db.query<TopicRow, [string, number, string]>(
-    "SELECT * FROM topics WHERE user_id = ? AND message_thread_id = ? AND server_name = ?"
-  ).get(String(userId), threadId, SERVER_NAME);
+export function getTopicByThreadId(threadId: number): ForumTopicInfo | null {
+  const row = db.query<TopicRow, [number, string]>(
+    "SELECT * FROM topics WHERE message_thread_id = ? AND server_name = ?"
+  ).get(threadId, SERVER_NAME);
   return row ? rowToTopic(row) : null;
 }
 
@@ -346,55 +380,55 @@ export function findUserByGroupAndThread(groupId: number, threadId: number): { u
 }
 
 /** Get session ID for a topic */
-export function getSessionForTopic(userId: number, topicName: string): string | null {
+export function getSessionForTopic(topicName: string): string | null {
   const row = db.query<{ session_id: string | null }, [string, string]>(
-    "SELECT session_id FROM topics WHERE user_id = ? AND name = ?"
-  ).get(String(userId), topicName);
+    "SELECT session_id FROM topics WHERE server_name = ? AND name = ?"
+  ).get(SERVER_NAME, topicName);
   return row?.session_id || null;
 }
 
 /** Get cron session ID for a topic */
-export function getCronSessionForTopic(userId: number, topicName: string): string | null {
+export function getCronSessionForTopic(topicName: string): string | null {
   const row = db.query<{ cron_session_id: string | null }, [string, string]>(
-    "SELECT cron_session_id FROM topics WHERE user_id = ? AND name = ?"
-  ).get(String(userId), topicName);
+    "SELECT cron_session_id FROM topics WHERE server_name = ? AND name = ?"
+  ).get(SERVER_NAME, topicName);
   return row?.cron_session_id || null;
 }
 
 /** Set cron session ID for a topic */
-export function setCronSessionForTopic(userId: number, topicName: string, sessionId: string) {
-  db.query("UPDATE topics SET cron_session_id = ? WHERE user_id = ? AND name = ?").run(
-    sessionId, String(userId), topicName
+export function setCronSessionForTopic(topicName: string, sessionId: string) {
+  db.query("UPDATE topics SET cron_session_id = ? WHERE server_name = ? AND name = ?").run(
+    sessionId, SERVER_NAME, topicName
   );
 }
 
 /** Set session ID for a topic */
-export function setSessionForTopic(userId: number, topicName: string, sessionId: string) {
-  db.query("UPDATE topics SET session_id = ? WHERE user_id = ? AND name = ?").run(
-    sessionId, String(userId), topicName
+export function setSessionForTopic(topicName: string, sessionId: string) {
+  db.query("UPDATE topics SET session_id = ? WHERE server_name = ? AND name = ?").run(
+    sessionId, SERVER_NAME, topicName
   );
 }
 
 /** Clear session ID for a topic */
-export function clearSessionForTopic(userId: number, topicName: string) {
-  db.query("UPDATE topics SET session_id = NULL WHERE user_id = ? AND name = ?").run(
-    String(userId), topicName
+export function clearSessionForTopic(topicName: string) {
+  db.query("UPDATE topics SET session_id = NULL WHERE server_name = ? AND name = ?").run(
+    SERVER_NAME, topicName
   );
 }
 
-/** Get all topic names for a user (this server only) */
-export function getTopicNames(userId: number): string[] {
-  const rows = db.query<{ name: string }, [string, string]>(
-    "SELECT name FROM topics WHERE user_id = ? AND server_name = ?"
-  ).all(String(userId), SERVER_NAME);
+/** Get all topic names in this server */
+export function getTopicNames(): string[] {
+  const rows = db.query<{ name: string }, string>(
+    "SELECT name FROM topics WHERE server_name = ?"
+  ).all(SERVER_NAME);
   return rows.map(r => r.name);
 }
 
 /** Get all topic names for a specific group (this server only) */
-export function getTopicNamesForGroup(userId: number, groupId: number): string[] {
-  const rows = db.query<{ name: string }, [string, number, string]>(
-    "SELECT name FROM topics WHERE user_id = ? AND forum_group_id = ? AND server_name = ?"
-  ).all(String(userId), groupId, SERVER_NAME);
+export function getTopicNamesForGroup(groupId: number): string[] {
+  const rows = db.query<{ name: string }, [string, number]>(
+    "SELECT name FROM topics WHERE server_name = ? AND forum_group_id = ?"
+  ).all(SERVER_NAME, groupId);
   return rows.map(r => r.name);
 }
 
@@ -444,10 +478,10 @@ export function clearDmSessionId(userId: number) {
 }
 
 /** Get topic description */
-export function getTopicDescription(userId: number, topicName: string): string | null {
+export function getTopicDescription(topicName: string): string | null {
   const row = db.query<{ description: string | null }, [string, string]>(
-    "SELECT description FROM topics WHERE user_id = ? AND name = ?"
-  ).get(String(userId), topicName);
+    "SELECT description FROM topics WHERE server_name = ? AND name = ?"
+  ).get(SERVER_NAME, topicName);
   return row?.description || null;
 }
 
@@ -458,91 +492,91 @@ const MODEL_ALIAS: Record<string, string> = {
 };
 
 /** Get topic model (resolves aliases) */
-export function getTopicModel(userId: number, topicName: string): string | null {
+export function getTopicModel(topicName: string): string | null {
   const row = db.query<{ model: string | null }, [string, string]>(
-    "SELECT model FROM topics WHERE user_id = ? AND name = ?"
-  ).get(String(userId), topicName);
+    "SELECT model FROM topics WHERE server_name = ? AND name = ?"
+  ).get(SERVER_NAME, topicName);
   const raw = row?.model ?? null;
   if (!raw) return null;
   return MODEL_ALIAS[raw] || raw;
 }
 
 /** Set topic model */
-export function setTopicModel(userId: number, topicName: string, model: string | null): boolean {
-  const result = db.query("UPDATE topics SET model = ? WHERE user_id = ? AND name = ?").run(
-    model, String(userId), topicName
+export function setTopicModel(topicName: string, model: string | null): boolean {
+  const result = db.query("UPDATE topics SET model = ? WHERE server_name = ? AND name = ?").run(
+    model, SERVER_NAME, topicName
   );
   return result.changes > 0;
 }
 
 /** Set topic description */
-export function setTopicDescription(userId: number, topicName: string, description: string): boolean {
-  const result = db.query("UPDATE topics SET description = ? WHERE user_id = ? AND name = ?").run(
-    description, String(userId), topicName
+export function setTopicDescription(topicName: string, description: string): boolean {
+  const result = db.query("UPDATE topics SET description = ? WHERE server_name = ? AND name = ?").run(
+    description, SERVER_NAME, topicName
   );
   return result.changes > 0;
 }
 
 /** Get topic cwd */
-export function getTopicCwd(userId: number, topicName: string): string | null {
+export function getTopicCwd(topicName: string): string | null {
   const row = db.query<{ cwd: string | null }, [string, string]>(
-    "SELECT cwd FROM topics WHERE user_id = ? AND name = ?"
-  ).get(String(userId), topicName);
+    "SELECT cwd FROM topics WHERE server_name = ? AND name = ?"
+  ).get(SERVER_NAME, topicName);
   return row?.cwd || null;
 }
 
 /** Set topic cwd */
-export function setTopicCwd(userId: number, topicName: string, cwd: string | null): boolean {
-  const result = db.query("UPDATE topics SET cwd = ? WHERE user_id = ? AND name = ?").run(
-    cwd, String(userId), topicName
+export function setTopicCwd(topicName: string, cwd: string | null): boolean {
+  const result = db.query("UPDATE topics SET cwd = ? WHERE server_name = ? AND name = ?").run(
+    cwd, SERVER_NAME, topicName
   );
   return result.changes > 0;
 }
 
 /** Get topic effort level */
-export function getTopicEffort(userId: number, topicName: string): EffortLevel | null {
+export function getTopicEffort(topicName: string): EffortLevel | null {
   const row = db.query<{ effort: EffortLevel | null }, [string, string]>(
-    "SELECT effort FROM topics WHERE user_id = ? AND name = ?"
-  ).get(String(userId), topicName);
+    "SELECT effort FROM topics WHERE server_name = ? AND name = ?"
+  ).get(SERVER_NAME, topicName);
   return row?.effort ?? null;
 }
 
 /** Set topic effort level */
-export function setTopicEffort(userId: number, topicName: string, effort: EffortLevel | null): boolean {
-  const result = db.query("UPDATE topics SET effort = ? WHERE user_id = ? AND name = ?").run(
-    effort, String(userId), topicName
+export function setTopicEffort(topicName: string, effort: EffortLevel | null): boolean {
+  const result = db.query("UPDATE topics SET effort = ? WHERE server_name = ? AND name = ?").run(
+    effort, SERVER_NAME, topicName
   );
   return result.changes > 0;
 }
 
 /** Update topic's message_thread_id (used when recreating topics) */
-export function updateTopicThreadId(userId: number, topicName: string, newThreadId: number, groupId: number) {
-  db.query("UPDATE topics SET message_thread_id = ?, forum_group_id = ? WHERE user_id = ? AND name = ?").run(
-    newThreadId, groupId, String(userId), topicName
+export function updateTopicThreadId(topicName: string, newThreadId: number, groupId: number) {
+  db.query("UPDATE topics SET message_thread_id = ?, forum_group_id = ? WHERE server_name = ? AND name = ?").run(
+    newThreadId, groupId, SERVER_NAME, topicName
   );
 }
 
-/** Get all topics for a user (this server only) */
-export function getAllTopics(userId: number): ForumTopicInfo[] {
-  const rows = db.query<TopicRow, [string, string]>(
-    "SELECT * FROM topics WHERE user_id = ? AND server_name = ?"
-  ).all(String(userId), SERVER_NAME);
+/** Get all topics in this server */
+export function getAllTopics(): ForumTopicInfo[] {
+  const rows = db.query<TopicRow, string>(
+    "SELECT * FROM topics WHERE server_name = ?"
+  ).all(SERVER_NAME);
   return rows.map(rowToTopic);
 }
 
 /** Get all topics for a specific group (this server only) */
-export function getAllTopicsForGroup(userId: number, groupId: number): ForumTopicInfo[] {
-  const rows = db.query<TopicRow, [string, number, string]>(
-    "SELECT * FROM topics WHERE user_id = ? AND forum_group_id = ? AND server_name = ?"
-  ).all(String(userId), groupId, SERVER_NAME);
+export function getAllTopicsForGroup(groupId: number): ForumTopicInfo[] {
+  const rows = db.query<TopicRow, [string, number]>(
+    "SELECT * FROM topics WHERE server_name = ? AND forum_group_id = ?"
+  ).all(SERVER_NAME, groupId);
   return rows.map(rowToTopic);
 }
 
 /** Get MCP config for a topic */
-export function getTopicMcpConfig(userId: number, topicName: string): { enabled: string[] | null; extra: Record<string, unknown> } {
+export function getTopicMcpConfig(topicName: string): { enabled: string[] | null; extra: Record<string, unknown> } {
   const row = db.query<{ mcp_enabled: string | null; mcp_extra: string | null }, [string, string]>(
-    "SELECT mcp_enabled, mcp_extra FROM topics WHERE user_id = ? AND name = ?"
-  ).get(String(userId), topicName);
+    "SELECT mcp_enabled, mcp_extra FROM topics WHERE server_name = ? AND name = ?"
+  ).get(SERVER_NAME, topicName);
   return {
     enabled: row?.mcp_enabled ? JSON.parse(row.mcp_enabled) : null,
     extra: row?.mcp_extra ? JSON.parse(row.mcp_extra) : {},
@@ -550,17 +584,17 @@ export function getTopicMcpConfig(userId: number, topicName: string): { enabled:
 }
 
 /** Set enabled MCP server names for a topic */
-export function setTopicMcpEnabled(userId: number, topicName: string, enabled: string[] | null): boolean {
-  const result = db.query("UPDATE topics SET mcp_enabled = ? WHERE user_id = ? AND name = ?").run(
-    enabled !== null ? JSON.stringify(enabled) : null, String(userId), topicName
+export function setTopicMcpEnabled(topicName: string, enabled: string[] | null): boolean {
+  const result = db.query("UPDATE topics SET mcp_enabled = ? WHERE server_name = ? AND name = ?").run(
+    enabled !== null ? JSON.stringify(enabled) : null, SERVER_NAME, topicName
   );
   return result.changes > 0;
 }
 
 /** Set extra MCP server configs for a topic */
-export function setTopicMcpExtra(userId: number, topicName: string, extra: Record<string, unknown>): boolean {
-  const result = db.query("UPDATE topics SET mcp_extra = ? WHERE user_id = ? AND name = ?").run(
-    JSON.stringify(extra), String(userId), topicName
+export function setTopicMcpExtra(topicName: string, extra: Record<string, unknown>): boolean {
+  const result = db.query("UPDATE topics SET mcp_extra = ? WHERE server_name = ? AND name = ?").run(
+    JSON.stringify(extra), SERVER_NAME, topicName
   );
   return result.changes > 0;
 }
