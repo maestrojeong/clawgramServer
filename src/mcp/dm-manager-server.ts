@@ -5,7 +5,7 @@ import { z } from "zod";
 import { writeFileSync, readFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, statSync, copyFileSync } from "fs";
 import { join, basename, dirname } from "path";
 import { Database } from "bun:sqlite";
-import { USERS_LOG_DIR, SESSIONS_DB, DM_CMD_DIR, DM_RESP_DIR, DEBUG_FILE, SERVER_NAME } from "@/core/config";
+import { USERS_LOG_DIR, SESSIONS_DB, DM_CMD_DIR, DM_RESP_DIR, DEBUG_FILE, SERVER_NAME, withTopicPrefix } from "@/core/config";
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -292,7 +292,7 @@ server.tool(
       };
     }
 
-    if (config.topics[name]) {
+    if (config.topics[withTopicPrefix(name)]) {
       return {
         content: [{ type: "text" as const, text: `Error: Topic "${name}" already exists.` }],
         isError: true,
@@ -335,7 +335,7 @@ server.tool(
   },
   async ({ name }) => {
     const config = getUserConfig();
-    if (!config?.topics[name]) {
+    if (!config?.topics[withTopicPrefix(name)]) {
       return {
         content: [{ type: "text" as const, text: `Error: Topic "${name}" not found.` }],
         isError: true,
@@ -379,7 +379,7 @@ server.tool(
   },
   async ({ topic, description }) => {
     const config = getUserConfig();
-    if (!config?.topics[topic]) {
+    if (!config?.topics[withTopicPrefix(topic)]) {
       return {
         content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found.` }],
         isError: true,
@@ -420,14 +420,15 @@ server.tool(
   },
   async ({ topic }) => {
     const config = getUserConfig();
-    if (!config?.topics[topic]) {
+    const t = config?.topics[withTopicPrefix(topic)];
+    if (!t) {
       return {
         content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found.` }],
         isError: true,
       };
     }
 
-    const extra = config.topics[topic].description;
+    const extra = t.description;
     if (!extra) {
       return {
         content: [{ type: "text" as const, text: `Topic "${topic}" has no description set.` }],
@@ -449,7 +450,7 @@ server.tool(
   },
   async ({ topic, model }) => {
     const config = getUserConfig();
-    if (!config?.topics[topic]) {
+    if (!config?.topics[withTopicPrefix(topic)]) {
       return {
         content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found.` }],
         isError: true,
@@ -491,14 +492,15 @@ server.tool(
   },
   async ({ topic }) => {
     const config = getUserConfig();
-    if (!config?.topics[topic]) {
+    const t = config?.topics[withTopicPrefix(topic)];
+    if (!t) {
       return {
         content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found.` }],
         isError: true,
       };
     }
 
-    const model = config.topics[topic].model || "default (system)";
+    const model = t.model || "default (system)";
     return {
       content: [{ type: "text" as const, text: `Topic "${topic}" model: ${model}` }],
     };
@@ -514,7 +516,7 @@ server.tool(
   },
   async ({ topic, cwd }) => {
     const config = getUserConfig();
-    if (!config?.topics[topic]) {
+    if (!config?.topics[withTopicPrefix(topic)]) {
       return {
         content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found.` }],
         isError: true,
@@ -556,14 +558,15 @@ server.tool(
   },
   async ({ topic }) => {
     const config = getUserConfig();
-    if (!config?.topics[topic]) {
+    const t = config?.topics[withTopicPrefix(topic)];
+    if (!t) {
       return {
         content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found.` }],
         isError: true,
       };
     }
 
-    const cwd = config.topics[topic].cwd || "~/ (default)";
+    const cwd = t.cwd || "~/ (default)";
     return {
       content: [{ type: "text" as const, text: `Topic "${topic}" working directory: ${cwd}` }],
     };
@@ -579,7 +582,7 @@ server.tool(
   },
   async ({ topic, effort }) => {
     const config = getUserConfig();
-    if (!config?.topics[topic]) {
+    if (!config?.topics[withTopicPrefix(topic)]) {
       return {
         content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found.` }],
         isError: true,
@@ -621,14 +624,15 @@ server.tool(
   },
   async ({ topic }) => {
     const config = getUserConfig();
-    if (!config?.topics[topic]) {
+    const t = config?.topics[withTopicPrefix(topic)];
+    if (!t) {
       return {
         content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found.` }],
         isError: true,
       };
     }
 
-    const effort = config.topics[topic].effort || "default (high)";
+    const effort = t.effort || "default (high)";
     return {
       content: [{ type: "text" as const, text: `Topic "${topic}" effort level: ${effort}` }],
     };
@@ -643,10 +647,10 @@ server.tool(
   },
   async ({ topic }) => {
     const config = getUserConfig();
-    if (!config?.topics[topic]) {
+    const t = config?.topics[withTopicPrefix(topic)];
+    if (!t) {
       return { content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found.` }], isError: true };
     }
-    const t = config.topics[topic];
     const defaultServers = ["send-file", "token-stats", "session-comm", "cron-manager"];
     const active = (t.mcpEnabled !== undefined && t.mcpEnabled !== null) ? t.mcpEnabled : defaultServers;
     const extra = t.mcpExtra ?? {};
@@ -672,7 +676,7 @@ server.tool(
   },
   async ({ topic, enabled }) => {
     const config = getUserConfig();
-    if (!config?.topics[topic]) {
+    if (!config?.topics[withTopicPrefix(topic)]) {
       return { content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found.` }], isError: true };
     }
     const requestId = genRequestId();
@@ -699,7 +703,7 @@ server.tool(
   },
   async ({ topic, extra }) => {
     const config = getUserConfig();
-    if (!config?.topics[topic]) {
+    if (!config?.topics[withTopicPrefix(topic)]) {
       return { content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found.` }], isError: true };
     }
     const requestId = genRequestId();
