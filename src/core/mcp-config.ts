@@ -1,5 +1,5 @@
 import {
-  SEND_FILE_SERVER, SESSION_COMM_SERVER, CRON_MANAGER_SERVER,
+  SEND_FILE_SERVER, SESSION_COMM_SERVER, CRON_MANAGER_SERVER, CRON_DM_SERVER,
   DM_MANAGER_SERVER, TOKEN_STATS_SERVER,
 } from "@/core/config";
 
@@ -14,12 +14,13 @@ function getCommonMcpServers(userId: string) {
 
 // --- Session-type-specific builders ---
 
-/** DM session: dm-manager instead of session-comm/cron-manager */
+/** DM session: dm-manager + cron-dm admin */
 export function getDmMcpServers(opts: { userId: string }) {
   const { userId } = opts;
   return {
     ...getCommonMcpServers(userId),
     "dm-manager": { command: "bun", args: ["run", DM_MANAGER_SERVER, `--user-id=${userId}`] },
+    "cron-dm": { command: "bun", args: ["run", CRON_DM_SERVER, `--user-id=${userId}`] },
   };
 }
 

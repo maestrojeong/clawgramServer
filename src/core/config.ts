@@ -32,7 +32,9 @@ export const SEND_FILE_SERVER = resolve(PROJECT_ROOT, "src/mcp/send-file-server.
 
 export const SESSION_COMM_SERVER = resolve(PROJECT_ROOT, "src/mcp/session-comm-server.ts");
 
-export const CRON_MANAGER_SERVER = resolve(PROJECT_ROOT, "src/mcp/cron-manager-server.ts");
+export const CRON_MANAGER_SERVER = resolve(PROJECT_ROOT, "src/mcp/cron/manager-server.ts");
+
+export const CRON_DM_SERVER = resolve(PROJECT_ROOT, "src/mcp/cron/dm-server.ts");
 
 export const DM_MANAGER_SERVER = resolve(PROJECT_ROOT, "src/mcp/dm-manager-server.ts");
 
