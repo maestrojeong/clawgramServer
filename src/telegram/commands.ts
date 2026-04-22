@@ -1,4 +1,8 @@
 import TelegramBot from "node-telegram-bot-api";
+import { existsSync, unlinkSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
+import { forkSession } from "@anthropic-ai/claude-agent-sdk";
 import { bot, ADMIN_USERS } from "@/telegram/client";
 import { sendMsg } from "@/telegram/helpers";
 import { toggleDebug } from "@/telegram/workspace";
@@ -14,10 +18,30 @@ import {
   updateTopicThreadId,
   clearDmSessionId,
   getForumGroupIds,
+  findUserByGroupAndThread,
+  getTopicCwd,
+  setTopicCwd,
+  getTopicDescription,
+  setTopicDescription,
+  getTopicModel,
+  setTopicModel,
+  getTopicEffort,
+  setTopicEffort,
+  getTopicMcpConfig,
+  setTopicMcpEnabled,
+  setTopicMcpExtra,
+  setTopicForkOrigin,
 } from "@/telegram/forum-sessions";
+import { activeQueries } from "@/telegram/query-handler";
 import { logger } from "@/core/logger";
 import { deleteTopicWithArchive } from "@/core/topic-lifecycle";
 import { withTopicPrefix } from "@/core/config";
+
+// --- /fork constants ---
+/** Telegram forum topic name hard limit (measured: 128 chars). */
+export const MAX_TOPIC_NAME_LEN = 128;
+/** Matches "/fork", "/fork@bot", "/fork name", "/fork@bot name" — rejects partial prefixes like "/forkabc". */
+export const FORK_CMD_RE = /^\/fork(?:@\S+)?(?:\s+(.*))?$/;
 
 interface ForumTopic {
   message_thread_id: number;
@@ -394,6 +418,144 @@ async function retryStaleTopics(userId: number, groupId: number, notifyChatId: n
 
   const [created, failedNames] = await createTopicsWithRetry(userId, groupId, staleTopics, "Recovery");
   await sendMsg(notifyChatId, buildTopicResultMsg("토픽 복구 성공", created, failedNames));
+}
+
+/** Remove the orphan session jsonl left behind when a forked session was created but topic creation fails. */
+function cleanupOrphanFork(sessionDir: string, forkId: string): void {
+  try {
+    const forkFile = join(sessionDir, ".claude", "sessions", `${forkId}.jsonl`);
+    if (existsSync(forkFile)) unlinkSync(forkFile);
+  } catch (e) {
+    logger.warn({ err: e, forkId }, "Fork: orphan session cleanup failed");
+  }
+}
+
+/**
+ * Handle /fork [name] inside a forum session topic.
+ * - Forks the parent session via SDK forkSession()
+ * - Creates a new Telegram forum topic
+ * - Inherits parent's description / model / effort / cwd / mcp config
+ * - Records fork_origin (root parent) for fork-of-fork correctness
+ * Returns true if the command was routed (caller should stop further routing).
+ */
+export async function handleForumFork(msg: TelegramBot.Message): Promise<boolean> {
+  if (msg.chat.type !== "supergroup" || !(msg.chat as { is_forum?: boolean }).is_forum) return false;
+  if (!msg.message_thread_id) return false;
+  const text = msg.text?.trim();
+  if (!text) return false;
+
+  const cmdMatch = text.match(FORK_CMD_RE);
+  if (!cmdMatch) return false;
+
+  const userId = msg.from?.id;
+  if (!userId || !ADMIN_USERS.has(userId)) return false;
+
+  const groupId = msg.chat.id;
+  const threadId = msg.message_thread_id;
+  const threadOpts: TelegramBot.SendMessageOptions = { message_thread_id: threadId };
+
+  const match = findUserByGroupAndThread(groupId, threadId);
+  if (!match) return false;
+  const parent = match.topic;
+
+  if (!parent.sessionId) {
+    await sendMsg(groupId,
+      "⚠️ 이 토픽엔 아직 세션이 없어 fork할 수 없습니다.\n먼저 메시지를 한 번 보내주세요.",
+      threadOpts);
+    return true;
+  }
+
+  // Parent가 응답 중이면 jsonl 쓰기 도중 fork로 부분 레코드를 복제할 수 있음
+  if (activeQueries.has(`${match.userId}:${parent.name}`)) {
+    await sendMsg(groupId, "⚠️ 응답 중입니다. 완료된 뒤 다시 시도하세요.", threadOpts);
+    return true;
+  }
+
+  const explicitRaw = (cmdMatch[1] ?? "").trim();
+  let newName: string;
+  if (explicitRaw) {
+    if (/[\r\n\t]/.test(explicitRaw)) {
+      await sendMsg(groupId, "⚠️ 토픽 이름에 개행/탭은 사용할 수 없습니다.", threadOpts);
+      return true;
+    }
+    // Apply server prefix for storage consistency (matches /new behavior)
+    const candidate = withTopicPrefix(explicitRaw);
+    if (candidate.length > MAX_TOPIC_NAME_LEN) {
+      await sendMsg(groupId, `⚠️ 토픽 이름은 ${MAX_TOPIC_NAME_LEN}자를 넘을 수 없습니다.`, threadOpts);
+      return true;
+    }
+    if (getTopicByName(candidate)) {
+      await sendMsg(groupId, `⚠️ "${candidate}" 토픽이 이미 존재합니다.`, threadOpts);
+      return true;
+    }
+    newName = candidate;
+  } else {
+    // Auto-name: parent + "-fork-N"
+    let n = 1;
+    while (getTopicByName(`${parent.name}-fork-${n}`)) n++;
+    newName = `${parent.name}-fork-${n}`;
+    if (newName.length > MAX_TOPIC_NAME_LEN) {
+      await sendMsg(groupId, `⚠️ 자동 생성된 fork 이름이 ${MAX_TOPIC_NAME_LEN}자를 초과했습니다.`, threadOpts);
+      return true;
+    }
+  }
+
+  const sessionDir = parent.cwd || homedir();
+
+  let forkedSessionId: string;
+  try {
+    const result = await forkSession(parent.sessionId, { dir: sessionDir, title: newName });
+    forkedSessionId = result.sessionId;
+  } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    logger.error({ err: e, userId, parent: parent.name }, "Fork: forkSession failed");
+    await sendMsg(groupId, `⚠️ 세션 fork 실패: ${errMsg}`, threadOpts);
+    return true;
+  }
+
+  let newThreadId: number;
+  try {
+    const result = await bot.createForumTopic(groupId, newName) as unknown as ForumTopic;
+    newThreadId = result.message_thread_id;
+  } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    logger.error({ err: e, userId, newName }, "Fork: createForumTopic failed");
+    cleanupOrphanFork(sessionDir, forkedSessionId);
+    await sendMsg(groupId, `⚠️ 토픽 생성 실패: ${errMsg}`, threadOpts);
+    return true;
+  }
+
+  try {
+    addTopic(userId, groupId, newName, newThreadId, forkedSessionId);
+  } catch (e) {
+    logger.error({ err: e, userId, newName }, "Fork: addTopic failed");
+    cleanupOrphanFork(sessionDir, forkedSessionId);
+    await sendMsg(groupId, "⚠️ 토픽 DB 등록 실패", threadOpts);
+    return true;
+  }
+
+  // Fork-of-fork는 최상위 부모에 귀속 (archiver/routing이 중간 토픽을 경유하지 않도록)
+  setTopicForkOrigin(newName, parent.forkOrigin ?? parent.name);
+
+  // Inherit parent settings
+  const parentDesc = getTopicDescription(parent.name);
+  if (parentDesc) setTopicDescription(newName, parentDesc);
+  const parentModel = getTopicModel(parent.name);
+  if (parentModel) setTopicModel(newName, parentModel);
+  const parentEffort = getTopicEffort(parent.name);
+  if (parentEffort) setTopicEffort(newName, parentEffort);
+  const parentCwd = getTopicCwd(parent.name);
+  if (parentCwd) setTopicCwd(newName, parentCwd);
+
+  const parentMcp = getTopicMcpConfig(parent.name);
+  if (parentMcp.enabled !== null) setTopicMcpEnabled(newName, parentMcp.enabled);
+  if (Object.keys(parentMcp.extra).length > 0) setTopicMcpExtra(newName, parentMcp.extra);
+
+  const link = getTopicLink(groupId, newThreadId);
+  await sendMsg(groupId, `✅ \`${newName}\`로 fork됨\n${link}`, threadOpts);
+
+  logger.info({ userId, parent: parent.name, newName, forkedSessionId, newThreadId }, "Fork: created");
+  return true;
 }
 
 /** Handle /connect command from within a forum group */

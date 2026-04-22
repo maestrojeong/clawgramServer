@@ -53,6 +53,7 @@ try { db.exec("ALTER TABLE topics ADD COLUMN mcp_enabled TEXT"); } catch {}
 try { db.exec("ALTER TABLE topics ADD COLUMN mcp_extra TEXT"); } catch {}
 try { db.exec("ALTER TABLE topics ADD COLUMN cwd TEXT"); } catch {}
 try { db.exec("ALTER TABLE topics ADD COLUMN server_name TEXT"); } catch {}
+try { db.exec("ALTER TABLE topics ADD COLUMN fork_origin TEXT"); } catch {}
 // Rename system_prompt_extra → description
 {
   const cols = db.query<{ name: string }, []>("PRAGMA table_info(topics)").all();
@@ -162,6 +163,9 @@ export interface ForumTopicInfo {
   model?: string;
   cwd?: string;
   effort?: EffortLevel;
+  /** Parent topic name if this topic was created via /fork; undefined for originals.
+   *  Points to the root parent (fork-of-fork still references the original). */
+  forkOrigin?: string;
 }
 
 export interface UserForumConfig {
@@ -184,6 +188,7 @@ type TopicRow = {
   model: string | null;
   cwd: string | null;
   effort: EffortLevel | null;
+  fork_origin: string | null;
 };
 
 type UserRow = {
@@ -206,6 +211,7 @@ function rowToTopic(row: TopicRow): ForumTopicInfo {
     ...(row.model && { model: row.model }),
     ...(row.cwd && { cwd: row.cwd }),
     ...(row.effort && { effort: row.effort }),
+    ...(row.fork_origin && { forkOrigin: row.fork_origin }),
   };
 }
 
@@ -595,6 +601,14 @@ export function setTopicMcpEnabled(topicName: string, enabled: string[] | null):
 export function setTopicMcpExtra(topicName: string, extra: Record<string, unknown>): boolean {
   const result = db.query("UPDATE topics SET mcp_extra = ? WHERE server_name = ? AND name = ?").run(
     JSON.stringify(extra), SERVER_NAME, topicName
+  );
+  return result.changes > 0;
+}
+
+/** Set fork origin for a topic (points to the root parent of a fork chain). */
+export function setTopicForkOrigin(topicName: string, origin: string): boolean {
+  const result = db.query("UPDATE topics SET fork_origin = ? WHERE server_name = ? AND name = ?").run(
+    origin, SERVER_NAME, topicName
   );
   return result.changes > 0;
 }

@@ -5,7 +5,7 @@ import { sendMsg } from "@/telegram/helpers";
 import { initUserWorkspace, syncMetaClaudeMd, syncMetaAgents, cleanStaleQueryStates } from "@/telegram/workspace";
 import { buildPromptFromMessage, buildPromptFromMediaGroup } from "@/telegram/attachments";
 import { handleClaudeQuery, activeQueries, AbortReason } from "@/telegram/query-handler";
-import { handleDmCommand, handleForumConnect } from "@/telegram/commands";
+import { handleDmCommand, handleForumConnect, handleForumFork } from "@/telegram/commands";
 import { startOutboxPolling, onSessionInject, onAbortRequest } from "@/telegram/outbox";
 import {
   findUserByGroupAndThread,
@@ -221,6 +221,9 @@ bot.on("message", async (msg) => {
 
     topicMatch = findUserByGroupAndThread(msg.chat.id, msg.message_thread_id);
     if (!topicMatch) return;
+
+    // /fork must be handled before routeMessage so it doesn't inject into the Claude session.
+    if (msg.text && isAdmin && await handleForumFork(msg)) return;
   } else if (msg.chat.type !== "private") {
     return;
   }
