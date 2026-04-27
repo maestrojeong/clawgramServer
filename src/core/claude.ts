@@ -74,7 +74,7 @@ export async function* claudeQuery(
           userId: opts.userId || "default",
           session: opts.session || "default",
           depth: opts.depth,
-          chain: opts.chain,
+          silent: opts.silent,
           enabled: opts.mcpEnabled,
           extra: opts.mcpExtra,
         })

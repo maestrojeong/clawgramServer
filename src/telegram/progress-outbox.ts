@@ -35,7 +35,7 @@ export async function flushProgressOutbox() {
       }
 
       // Process status/log first, defer clear entries to avoid race condition
-      // (orchestrate may write clear immediately after status in the same batch)
+      // (ask_cron fork may write clear immediately after status in the same batch)
       const clearEntries: ProgressEntry[] = [];
       let hadStatusOrLog = false;
 

@@ -143,7 +143,7 @@ onAbortRequest((userId, topicName) => {
 });
 
 // --- Session inject callback ---
-onSessionInject(async ({ userId, topicName, sessionId, prompt, messageThreadId, forumGroupId, from, depth, chain, requestId, contextId, isCommand }) => {
+onSessionInject(async ({ userId, topicName, sessionId, prompt, messageThreadId, forumGroupId, from, depth, fromDepth, silent, requestId, contextId }) => {
   await handleClaudeQuery({
     chatId: forumGroupId,
     userId,
@@ -156,10 +156,10 @@ onSessionInject(async ({ userId, topicName, sessionId, prompt, messageThreadId, 
     }),
     from,
     depth,
-    chain,
+    fromDepth,
+    silent,
     requestId,
     contextId,
-    isCommand,
   });
 });
 

@@ -121,25 +121,12 @@ export function loadAgentPrompt(filename: string): AgentDef {
 export const SYSTEM_PROMPT = loadPrompt("topic-system.md");
 export const DM_SYSTEM_PROMPT = loadPrompt("dm-system.md");
 
-const DELEGATE_SYSTEM_PROMPT_RAW = loadPrompt("delegate-system.md", AGENTS_PROMPTS_DIR);
-
 export function buildTopicSystemPrompt(opts?: {
   description?: string | null;
 }): string {
   let prompt = SYSTEM_PROMPT;
   if (opts?.description) {
     prompt += "\n\n## Topic-Specific Instructions\n" + opts.description;
-  }
-  return prompt;
-}
-
-export function buildDelegateSystemPrompt(opts: {
-  from: string;
-  description?: string | null;
-}): string {
-  let prompt = DELEGATE_SYSTEM_PROMPT_RAW.replace(/\{\{FROM\}\}/g, opts.from);
-  if (opts.description) {
-    prompt += "\n\n## Role\n" + opts.description;
   }
   return prompt;
 }

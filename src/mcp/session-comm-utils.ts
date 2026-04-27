@@ -20,14 +20,16 @@ const args = process.argv.slice(2);
 export const userId = args.find((a) => a.startsWith("--user-id="))?.split("=")[1] || "";
 export const currentTopic = args.find((a) => a.startsWith("--topic="))?.split("=")[1] || "";
 export const currentDepth = Number(args.find((a) => a.startsWith("--depth="))?.split("=")[1] ?? "0");
-const chainArg = args.find((a) => a.startsWith("--chain="))?.slice("--chain=".length);
-export const currentChain: string[] = chainArg
-  ? JSON.parse(chainArg)
-  : currentTopic ? [currentTopic] : [];
-// Progress always goes to the root caller's topic thread (chain[0]), not the current fork's topic
-export const progressTopic = currentChain[0] || currentTopic;
+// When true, the session is a silent fork generating an ask_session reply —
+// outbound tools (ask_session/tell_session/abort_session) are not registered.
+export const isReplyOnly = args.includes("--reply-only=true");
+// Progress writes (ask_cron fork) land in the calling session's topic thread.
+export const progressTopic = currentTopic;
 
-export const MAX_DEPTH = 3;
+// Max tell_session relay depth from origin user. ask_session forks reset
+// to depth=0 (reply-only, can't initiate further calls), so this only caps
+// tell_session chains.
+export const MAX_TELL_DEPTH = 3;
 export const MAX_MESSAGE_LENGTH = 10_000;
 export const USER_DATA_DIR = resolve(__dirname, "..", "..", "data", "users", userId);
 
@@ -172,27 +174,23 @@ export interface ForkQueryResult {
   thinkingLog: string[]; // intermediate reasoning — shown only in debug mode
 }
 
-/** Run SDK query on a (forked) session, collecting intermediate process + final result */
+/** Run SDK query on a (forked) session, collecting intermediate process + final result.
+ *  Used by ask_cron to query a forked cron session synchronously. */
 export async function queryForkSession(
   prompt: string,
   sessionId?: string,
-  topic?: string,
-  depth?: number,
-  chain?: string[],
   onProgress?: (type: "status" | "log", text: string) => void,
   abortController?: AbortController,
   systemPrompt?: string,
 ): Promise<ForkQueryResult> {
   const { query } = await import("@anthropic-ai/claude-agent-sdk");
-  const d = depth ?? currentDepth;
-  const c = chain ?? currentChain;
-  const label = topic || currentTopic;
+  const label = currentTopic;
 
   const baseOptions: Options = {
     cwd: getTopicCwd(label),
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
-    mcpServers: getForkMcpServers({ userId, topic: label, depth: d, chain: c }) as Options["mcpServers"],
+    mcpServers: getForkMcpServers({ userId, topic: label, depth: currentDepth }) as Options["mcpServers"],
     env: getCleanEnv(),
     ...(systemPrompt && { systemPrompt }),
     ...(abortController && { abortController }),

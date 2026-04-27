@@ -2,12 +2,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { existsSync, appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, appendFileSync, mkdirSync, readFileSync } from "fs";
 import { join } from "path";
 
-import { ACTIVE_QUERY_STALE_MS, USERS_LOG_DIR, loadAgentPrompt, buildTopicSystemPrompt, buildDelegateSystemPrompt } from "@/core/config";
+import { ACTIVE_QUERY_STALE_MS, USERS_LOG_DIR } from "@/core/config";
 import { ALL_FORUM_MCP_SERVER_NAMES, REQUIRED_FORUM_MCP_SERVERS } from "@/core/mcp-config";
-import { createContextId, appendContext, loadContext, formatContextForPrompt } from "@/core/context-store";
+import { createContextId } from "@/core/context-store";
 
 import type { QueryState } from "./session-comm-utils";
 import {
@@ -15,8 +15,8 @@ import {
   userId,
   currentTopic,
   currentDepth,
-  currentChain,
-  MAX_DEPTH,
+  isReplyOnly,
+  MAX_TELL_DEPTH,
   MAX_MESSAGE_LENGTH,
   getTopicCwd,
   getTopicsForUser,
@@ -29,10 +29,6 @@ import {
   setMcpConfig,
   setCurrentTopicDescription,
 } from "./session-comm-utils";
-
-// --- Lazy-loaded agent prompts ---
-let _orchPrompt: ReturnType<typeof loadAgentPrompt> | null = null;
-const getOrchPrompt = () => (_orchPrompt ??= loadAgentPrompt("orchestrator-system.md"));
 
 // --- MCP Server ---
 
@@ -54,9 +50,8 @@ server.tool(
       .map(([name, t]) => {
         const status = t.sessionId ? `active (${t.sessionId.slice(0, 8)})` : "no session";
         const cron = t.cronSessionId ? ` | cron: active` : "";
-        const inChain = currentChain.includes(name) ? " (체인 내 존재)" : "";
         const desc = t.description ? `\n    description: ${t.description.slice(0, 80)}${t.description.length > 80 ? "..." : ""}` : "";
-        return `- ${name}: ${status}${cron}${inChain}${desc}`;
+        return `- ${name}: ${status}${cron}${desc}`;
       });
 
     if (entries.length === 0) {
@@ -69,7 +64,7 @@ server.tool(
       content: [
         {
           type: "text" as const,
-          text: `Current session: ${currentTopic}\nDepth: ${currentDepth}/${MAX_DEPTH} | Chain: ${currentChain.join(" → ")}\n\nAvailable sessions:\n${entries.join("\n")}`,
+          text: `Current session: ${currentTopic}\nTell depth: ${currentDepth}/${MAX_TELL_DEPTH}\n\nAvailable sessions:\n${entries.join("\n")}`,
         },
       ],
     };
@@ -177,7 +172,7 @@ server.tool(
       });
       cronForkId = forkResult.sessionId;
 
-      const queryResult = await queryForkSession(prompt, cronForkId, undefined, undefined, undefined, writeProgress);
+      const queryResult = await queryForkSession(prompt, cronForkId, writeProgress);
 
       return {
         content: [{
@@ -201,12 +196,93 @@ server.tool(
   }
 );
 
-// --- depth=0 only: top-level session tools ---
+// --- always-available session inspection / self-config ---
 
-if (currentDepth === 0) {
+server.tool(
+  "peek_session",
+  "Check which sessions are currently running a query (busy) vs idle. Useful before abort_session.",
+  {},
+  async () => {
+    const topics = getTopicsForUser();
+    const topicNames = Object.keys(topics);
+    const activeQueriesDir = join(USERS_LOG_DIR, userId, "active-queries");
+
+    // Read own query state for consistent display
+    const selfStateFile = join(activeQueriesDir, `${currentTopic}.json`);
+    let selfLabel = `${currentTopic} (자신 — 실행 중)`;
+    try {
+      const selfState = JSON.parse(readFileSync(selfStateFile, "utf-8")) as QueryState;
+      const selfElapsed = Date.now() - new Date(selfState.since).getTime();
+      const selfMins = Math.floor(selfElapsed / 60000);
+      const selfSecs = Math.floor((selfElapsed % 60000) / 1000);
+      const selfTimeStr = selfMins > 0 ? `${selfMins}분 ${selfSecs}초` : `${selfSecs}초`;
+      const selfTaskStr = selfState.task ? ` | ${selfState.task}` : "";
+      selfLabel = `${currentTopic} (자신 — ${selfTimeStr}${selfTaskStr})`;
+    } catch { /* file absent or unreadable — fallback to default label */ }
+    const running: string[] = [selfLabel];
+    const idle: string[] = [];
+
+    for (const name of topicNames) {
+      if (name === currentTopic) continue;
+      const stateFile = join(activeQueriesDir, `${name}.json`);
+      let isRunning = false;
+      if (existsSync(stateFile)) {
+        try {
+          const state = JSON.parse(readFileSync(stateFile, "utf-8")) as QueryState;
+          const elapsed = Date.now() - new Date(state.since).getTime();
+          if (elapsed <= ACTIVE_QUERY_STALE_MS) {
+            const mins = Math.floor(elapsed / 60000);
+            const secs = Math.floor((elapsed % 60000) / 1000);
+            const timeStr = mins > 0 ? `${mins}분 ${secs}초` : `${secs}초`;
+            const taskStr = state.task ? ` | ${state.task}` : "";
+            running.push(`${name} (${timeStr}${taskStr})`);
+            isRunning = true;
+          }
+        } catch { /* stale or corrupt, treat as idle */ }
+      }
+      if (!isRunning) idle.push(name);
+    }
+
+    const runningHeader = `실행 중 (${running.length}):\n${running.map(r => `  ${r}`).join("\n")}`;
+    const lines = [
+      `현재 세션 상태`,
+      ``,
+      runningHeader,
+      `유휴 (${idle.length}): ${idle.join(", ") || "없음"}`,
+    ];
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+  }
+);
+
+server.tool(
+  "set_description",
+  "Set a description for the current session. Acts as a system prompt addition and routing hint for other sessions using list_sessions. Call this once at session start based on the topic's CLAUDE.md.",
+  {
+    description: z.string().describe("What this session specializes in (e.g. 'UE5 graphics development, shader optimization')"),
+  },
+  async ({ description }) => {
+    try {
+      setCurrentTopicDescription(description);
+      return {
+        content: [{ type: "text" as const, text: `Description set for "${currentTopic}".` }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// --- outbound session-to-session tools ---
+// Suppressed when running as a silent fork that exists only to generate an
+// ask_session reply — such a fork has no reason to initiate further calls.
+
+if (!isReplyOnly) {
   server.tool(
     "ask_session",
-    "Ask another Claude session (forum topic) a question. The reply will be automatically injected back into your session when ready — no polling needed. Use context_id to continue a previous conversation without resending full context.",
+    "ASK — Delegate to another session and pull the result back INTO YOUR CONTEXT. Target forks (no history pollution), processes with full tools, and the answer is auto-injected into your conversation. Use ONLY when YOU need the output to drive your next action (code reviews whose verdict determines your next edit, fact checks you'll cite, lookups that decide your next step). If the user can just read the result in the target topic, use tell_session — ask burns your context window with content you don't actually need. Decision rule: 'Do I need this output in MY context to proceed?' Yes → ask. No (result lives in target topic, user reads it there) → tell_session. Use context_id to continue a previous exchange without resending.",
     {
       to: z.string().describe("Target session/topic name (e.g. '회의록', '신건')"),
       message: z.string().describe("Message to send to the target session"),
@@ -238,15 +314,7 @@ if (currentDepth === 0) {
         };
       }
 
-      if (currentChain.includes(to)) {
-        return {
-          content: [{ type: "text" as const, text: `Error: "${to}"는 이미 체인에 포함됨. 순환 호출 불가.\n체인: ${currentChain.join(" → ")}` }],
-          isError: true,
-        };
-      }
-
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const newChain = [...currentChain, to];
       const contextId = context_id || createContextId();
 
       try {
@@ -254,13 +322,14 @@ if (currentDepth === 0) {
         mkdirSync(inboxDir, { recursive: true });
         const inboxFile = join(inboxDir, `${to}.jsonl`);
         const entry = {
+          type: "ask" as const,
           requestId,
           from: currentTopic,
           message,
           contextId,
-          depth: currentDepth + 1,
-          maxDepth: MAX_DEPTH,
-          chain: newChain,
+          // Caller's depth — used to resume this session at the correct depth
+          // when the fork's reply is injected back.
+          fromDepth: currentDepth,
           timestamp: new Date().toISOString(),
         };
         appendFileSync(inboxFile, JSON.stringify(entry) + "\n");
@@ -275,86 +344,9 @@ if (currentDepth === 0) {
       return {
         content: [{
           type: "text" as const,
-          text: `메시지를 "${to}" 세션에 전송했습니다. (chain: ${newChain.join(" → ")})\n\ncontext_id: ${contextId}\nrequest_id: ${requestId}\n\n응답은 이 세션에 자동으로 주입됩니다. 다음 ask_session에 context_id를 전달하면 이전 대화를 이어갈 수 있습니다.`,
+          text: `"${to}" 세션에 참조 요청을 보냈습니다.\n\ncontext_id: ${contextId}\nrequest_id: ${requestId}\n\n"${to}"가 공유한 내용이 이 세션에 자동으로 돌아옵니다. 다음 ask_session에 context_id를 전달하면 동일 주제의 대화를 이어갈 수 있습니다.`,
         }],
       };
-    }
-  );
-
-  server.tool(
-    "peek_session",
-    "Check which sessions are currently running a query (busy) vs idle. Useful before abort_session or orchestrate.",
-    {},
-    async () => {
-      const topics = getTopicsForUser();
-      const topicNames = Object.keys(topics);
-      const activeQueriesDir = join(USERS_LOG_DIR, userId, "active-queries");
-
-      // Read own query state for consistent display
-      const selfStateFile = join(activeQueriesDir, `${currentTopic}.json`);
-      let selfLabel = `${currentTopic} (자신 — 실행 중)`;
-      try {
-        const selfState = JSON.parse(readFileSync(selfStateFile, "utf-8")) as QueryState;
-        const selfElapsed = Date.now() - new Date(selfState.since).getTime();
-        const selfMins = Math.floor(selfElapsed / 60000);
-        const selfSecs = Math.floor((selfElapsed % 60000) / 1000);
-        const selfTimeStr = selfMins > 0 ? `${selfMins}분 ${selfSecs}초` : `${selfSecs}초`;
-        const selfTaskStr = selfState.task ? ` | ${selfState.task}` : "";
-        selfLabel = `${currentTopic} (자신 — ${selfTimeStr}${selfTaskStr})`;
-      } catch { /* file absent or unreadable — fallback to default label */ }
-      const running: string[] = [selfLabel];
-      const idle: string[] = [];
-
-      for (const name of topicNames) {
-        if (name === currentTopic) continue;
-        const stateFile = join(activeQueriesDir, `${name}.json`);
-        let isRunning = false;
-        if (existsSync(stateFile)) {
-          try {
-            const state = JSON.parse(readFileSync(stateFile, "utf-8")) as QueryState;
-            const elapsed = Date.now() - new Date(state.since).getTime();
-            if (elapsed <= ACTIVE_QUERY_STALE_MS) {
-              const mins = Math.floor(elapsed / 60000);
-              const secs = Math.floor((elapsed % 60000) / 1000);
-              const timeStr = mins > 0 ? `${mins}분 ${secs}초` : `${secs}초`;
-              const taskStr = state.task ? ` | ${state.task}` : "";
-              running.push(`${name} (${timeStr}${taskStr})`);
-              isRunning = true;
-            }
-          } catch { /* stale or corrupt, treat as idle */ }
-        }
-        if (!isRunning) idle.push(name);
-      }
-
-      const runningHeader = `실행 중 (${running.length}):\n${running.map(r => `  ${r}`).join("\n")}`;
-      const lines = [
-        `현재 세션 상태`,
-        ``,
-        runningHeader,
-        `유휴 (${idle.length}): ${idle.join(", ") || "없음"}`,
-      ];
-      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
-    }
-  );
-
-  server.tool(
-    "set_description",
-    "Set a description for the current session. Acts as a system prompt addition and routing hint for other sessions using list_sessions. Call this once at session start based on the topic's CLAUDE.md.",
-    {
-      description: z.string().describe("What this session specializes in (e.g. 'UE5 graphics development, shader optimization')"),
-    },
-    async ({ description }) => {
-      try {
-        setCurrentTopicDescription(description);
-        return {
-          content: [{ type: "text" as const, text: `Description set for "${currentTopic}".` }],
-        };
-      } catch (err) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-          isError: true,
-        };
-      }
     }
   );
 
@@ -362,19 +354,19 @@ if (currentDepth === 0) {
     "abort_session",
     "Abort the currently running query in another session. Use peek_session first to confirm it is busy.",
     {
-      target: z.string().describe("Target session/topic name to abort"),
+      to: z.string().describe("Target session/topic name to abort"),
     },
-    async ({ target }) => {
+    async ({ to }) => {
       const topics = getTopicsForUser();
-      if (!topics[target]) {
+      if (!topics[to]) {
         const available = Object.keys(topics).filter((n) => n !== currentTopic);
         return {
-          content: [{ type: "text" as const, text: `Error: Session "${target}" not found.\nAvailable: ${available.join(", ") || "none"}` }],
+          content: [{ type: "text" as const, text: `Error: Session "${to}" not found.\nAvailable: ${available.join(", ") || "none"}` }],
           isError: true,
         };
       }
 
-      if (target === currentTopic) {
+      if (to === currentTopic) {
         return {
           content: [{ type: "text" as const, text: `Error: 자기 자신은 abort할 수 없습니다.` }],
           isError: true,
@@ -384,7 +376,7 @@ if (currentDepth === 0) {
       try {
         const inboxDir = join(SESSION_INBOX_DIR, userId);
         mkdirSync(inboxDir, { recursive: true });
-        appendFileSync(join(inboxDir, `${target}.jsonl`), JSON.stringify({ type: "abort", timestamp: new Date().toISOString() }) + "\n");
+        appendFileSync(join(inboxDir, `${to}.jsonl`), JSON.stringify({ type: "abort", timestamp: new Date().toISOString() }) + "\n");
       } catch (err) {
         const e = err as { message?: string };
         return {
@@ -394,22 +386,29 @@ if (currentDepth === 0) {
       }
 
       return {
-        content: [{ type: "text" as const, text: `"${target}" 세션에 abort 신호를 보냈습니다. 실행 중인 쿼리가 있으면 중단됩니다.` }],
+        content: [{ type: "text" as const, text: `"${to}" 세션에 abort 신호를 보냈습니다. 실행 중인 쿼리가 있으면 중단됩니다.` }],
       };
     }
   );
 
   server.tool(
-    "command_session",
-    "Send a one-way command to another Claude session (forum topic). The command appears as a visible message in the target topic and is processed at depth=1 — the receiving session cannot use command_session in response. No reply is sent back.",
+    "tell_session",
+    "TELL — Delegate work or push context TO another session (one-way, nothing returns to your context). Message joins target's history; target processes async with full tools and the result lives in the target topic. Use for: delegating long-running or self-contained work (experiments, benchmarks, monitoring runs, file generation), status updates, persistent context injection — anything whose output the user can simply read in the target topic without you needing it. Prefer tell over ask_session whenever YOUR context doesn't need the result, since ask injects the full reply back and burns context. Decision rule: 'Do I need this output in MY context to proceed?' No → tell. Yes → ask_session.",
     {
       to: z.string().describe("Target session/topic name (e.g. '회의록', '신건')"),
-      message: z.string().describe("Command to send to the target session"),
+      message: z.string().describe("Message to send to the target session"),
     },
     async ({ to, message }) => {
       if (message.length > MAX_MESSAGE_LENGTH) {
         return {
           content: [{ type: "text" as const, text: `Error: message too long (${message.length} chars, max ${MAX_MESSAGE_LENGTH})` }],
+          isError: true,
+        };
+      }
+
+      if (currentDepth + 1 > MAX_TELL_DEPTH) {
+        return {
+          content: [{ type: "text" as const, text: `Error: depth 한도 도달 (현재 ${currentDepth}, 최대 ${MAX_TELL_DEPTH}). 더 이상 tell_session 체인을 만들 수 없습니다.` }],
           isError: true,
         };
       }
@@ -437,16 +436,17 @@ if (currentDepth === 0) {
         mkdirSync(inboxDir, { recursive: true });
         const inboxFile = join(inboxDir, `${to}.jsonl`);
         const entry = {
+          type: "tell" as const,
           from: currentTopic,
           message,
-          command: true,
+          depth: currentDepth + 1,
           timestamp: new Date().toISOString(),
         };
         appendFileSync(inboxFile, JSON.stringify(entry) + "\n");
       } catch (err) {
         const e = err as { message?: string };
         return {
-          content: [{ type: "text" as const, text: `Error: "${to}" 세션에 명령 전송 실패: ${e?.message || "Unknown"}` }],
+          content: [{ type: "text" as const, text: `Error: "${to}" 세션에 메시지 전송 실패: ${e?.message || "Unknown"}` }],
           isError: true,
         };
       }
@@ -454,205 +454,9 @@ if (currentDepth === 0) {
       return {
         content: [{
           type: "text" as const,
-          text: `명령을 "${to}" 세션에 전송했습니다. 해당 토픽에 메시지로 표시되고 Claude가 처리합니다.`,
+          text: `"${to}" 세션에 메시지를 전달했습니다 (fire-and-forget, 응답 없음). "${to}"의 히스토리에 기록되고 Claude가 처리합니다. 응답이 필요하면 ask_session을 쓰세요.`,
         }],
       };
-    }
-  );
-
-  server.tool(
-    "abort_orchestrate",
-    "Abort an ongoing orchestrate in another session. Use peek_session to confirm the session is busy with an orchestrate.",
-    {
-      target: z.string().describe("Topic name whose orchestrate to abort"),
-    },
-    async ({ target }) => {
-      const topics = getTopicsForUser();
-      if (!topics[target]) {
-        const available = Object.keys(topics).filter((n) => n !== currentTopic);
-        return {
-          content: [{ type: "text" as const, text: `Error: Session "${target}" not found.\nAvailable: ${available.join(", ") || "none"}` }],
-          isError: true,
-        };
-      }
-      try {
-        const inboxDir = join(SESSION_INBOX_DIR, userId);
-        mkdirSync(inboxDir, { recursive: true });
-        // .orch is a plain signal file polled directly by the orchestrate tool (MCP-internal IPC)
-        writeFileSync(join(inboxDir, `${target}.orch`), new Date().toISOString());
-      } catch (err) {
-        const e = err as { message?: string };
-        return {
-          content: [{ type: "text" as const, text: `Error: abort 신호 전송 실패: ${e?.message || "Unknown"}` }],
-          isError: true,
-        };
-      }
-      return {
-        content: [{ type: "text" as const, text: `"${target}" 세션의 orchestrate에 abort 신호를 보냈습니다.` }],
-      };
-    }
-  );
-
-  server.tool(
-    "orchestrate",
-    "Enter orchestrator mode: forks your own session and runs a complex task. " +
-    "The orchestrator can use delegate_to_session to synchronously assign work to other sessions, " +
-    "chain multiple sessions, and synthesize results. Use this when you need to " +
-    "coordinate work across multiple sessions and get results back immediately.",
-    {
-      task: z.string().describe("Task to perform — describe what to do and which sessions to query"),
-    },
-    async ({ task }) => {
-      if (!currentTopic) {
-        return { content: [{ type: "text" as const, text: "Error: No current topic." }], isError: true };
-      }
-
-      const topics = getTopicsForUser();
-      const self = topics[currentTopic];
-
-      if (!self?.sessionId) {
-        return { content: [{ type: "text" as const, text: "Error: No active session to fork." }], isError: true };
-      }
-
-      // Build orchestrator system prompt with current session list
-      const sessionList = Object.entries(topics)
-        .filter(([name]) => name !== currentTopic)
-        .map(([name, t]) => `- ${name}${t.description ? `: ${t.description}` : ""}`)
-        .join("\n") || "(no other sessions available)";
-      const orchSystemPrompt = getOrchPrompt().prompt.replace("{{SESSION_LIST}}", sessionList);
-
-      // Abort controller + signal file polling (polled internally; abort_orchestrate writes .orch to session-inbox)
-      const orchAbortController = new AbortController();
-      const orchSignalFile = join(SESSION_INBOX_DIR, userId, `${currentTopic}.orch`);
-      const pollInterval = setInterval(() => {
-        if (existsSync(orchSignalFile)) {
-          try { unlinkSync(orchSignalFile); } catch {}
-          orchAbortController.abort();
-        }
-      }, 1000);
-
-      let orchForkId: string | undefined;
-      try {
-        const { forkSession } = await import("@anthropic-ai/claude-agent-sdk");
-
-        const result = await forkSession(self.sessionId, {
-          dir: getTopicCwd(),
-          title: `orchestrator: ${currentTopic}`,
-        });
-        orchForkId = result.sessionId;
-
-        const orchForkResult = await queryForkSession(task, orchForkId, currentTopic, currentDepth + 1, currentChain, writeProgress, orchAbortController, orchSystemPrompt);
-
-        if (orchAbortController.signal.aborted) {
-          return { content: [{ type: "text" as const, text: "Orchestrate가 중단되었습니다." }] };
-        }
-        return { content: [{ type: "text" as const, text: formatForkResult("orchestrator", orchForkResult) }] };
-      } catch (err) {
-        if (orchAbortController.signal.aborted) {
-          return { content: [{ type: "text" as const, text: "Orchestrate가 중단되었습니다." }] };
-        }
-        const e = err as { message?: string };
-        return {
-          content: [{ type: "text" as const, text: `Error: orchestrate 실패: ${e?.message || "Unknown"}` }],
-          isError: true,
-        };
-      } finally {
-        clearInterval(pollInterval);
-        try { if (existsSync(orchSignalFile)) unlinkSync(orchSignalFile); } catch {}
-        clearProgress();
-        if (orchForkId) cleanupFork(orchForkId);
-      }
-    }
-  );
-}
-
-// --- depth>0 only: fork session tools ---
-
-if (currentDepth > 0) {
-  server.tool(
-    "delegate_to_session",
-    "Delegate work to another session synchronously by forking it. Returns the response directly. Use context_id to continue a previous conversation.",
-    {
-      to: z.string().describe("Target session/topic name"),
-      message: z.string().describe("Message to send"),
-      context_id: z.string().optional().describe("Context ID from a previous exchange. Omit for new conversations."),
-    },
-    async ({ to, message, context_id }) => {
-      if (message.length > MAX_MESSAGE_LENGTH) {
-        return { content: [{ type: "text" as const, text: `Error: message too long (${message.length} chars, max ${MAX_MESSAGE_LENGTH})` }], isError: true };
-      }
-
-      const topics = getTopicsForUser();
-      const target = topics[to];
-
-      if (!target) {
-        const available = Object.keys(topics).filter((n) => n !== currentTopic);
-        return { content: [{ type: "text" as const, text: `Error: Session "${to}" not found.\nAvailable: ${available.join(", ") || "none"}` }], isError: true };
-      }
-
-      if (currentChain.includes(to)) {
-        return { content: [{ type: "text" as const, text: `Error: "${to}"는 이미 체인에 포함됨. 순환 호출 불가.\n체인: ${currentChain.join(" → ")}` }], isError: true };
-      }
-
-      if (currentDepth >= MAX_DEPTH) {
-        return { content: [{ type: "text" as const, text: `Error: 최대 깊이(${MAX_DEPTH}) 도달.\n체인: ${currentChain.join(" → ")}` }], isError: true };
-      }
-
-      const newChain = [...currentChain, to];
-      const contextId = context_id || createContextId();
-      const uid = Number(userId);
-
-      // Build B's delegate system prompt (delegation context + description + memory)
-      const targetSystemPrompt = buildDelegateSystemPrompt({
-        from: currentTopic,
-        description: target.description,
-      });
-
-      // Load previous context and prepend to prompt
-      const contextPrefix = context_id && !isNaN(uid)
-        ? formatContextForPrompt(loadContext(uid, contextId))
-        : "";
-      const prompt = `${contextPrefix}[${currentTopic} 세션에서 온 메시지 (chain: ${newChain.join(" → ")})]\n${message}\n\n위 메시지에 응답해주세요.`;
-
-      // Save outgoing message to context
-      if (!isNaN(uid)) {
-        appendContext(uid, contextId, { role: currentTopic, content: message, ts: new Date().toISOString() });
-      }
-
-      let forkId: string | undefined;
-      try {
-        if (target.sessionId) {
-          try {
-            const { forkSession } = await import("@anthropic-ai/claude-agent-sdk");
-            const result = await forkSession(target.sessionId, {
-              dir: getTopicCwd(),
-              title: `chain: ${currentTopic} → ${to}`,
-            });
-            forkId = result.sessionId;
-          } catch {
-            // Fall through — run without resume
-          }
-        }
-
-        const qForkResult = await queryForkSession(prompt, forkId, to, currentDepth + 1, newChain, writeProgress, undefined, targetSystemPrompt);
-
-        // Save response to context
-        if (!isNaN(uid) && qForkResult) {
-          const responseText = typeof qForkResult === "string" ? qForkResult : JSON.stringify(qForkResult);
-          appendContext(uid, contextId, { role: to, content: responseText, ts: new Date().toISOString() });
-        }
-
-        const result = formatForkResult(to, qForkResult);
-        return { content: [{ type: "text" as const, text: `${result}\n\ncontext_id: ${contextId}` }] };
-      } catch (err) {
-        const e = err as { message?: string };
-        return {
-          content: [{ type: "text" as const, text: `Error: ${to} 세션 쿼리 실패: ${e?.message || "Unknown"}` }],
-          isError: true,
-        };
-      } finally {
-        if (forkId) cleanupFork(forkId);
-      }
     }
   );
 }

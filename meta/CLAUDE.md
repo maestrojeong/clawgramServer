@@ -15,51 +15,38 @@ user_{userId}/
 다른 세션(토픽)에 정보를 물어보거나 전달할 때 MCP 도구를 사용한다.
 
 - `mcp__session-comm__list_sessions` — 현재 사용 가능한 세션(토픽) 목록 조회
-- `mcp__session-comm__ask_session` — 다른 세션에 질문 (응답은 나중에 자동 주입)
+- `mcp__session-comm__ask_session` — 다른 세션에 질문하고 결과를 **내 컨텍스트로 가져옴**
   - `to`: 토픽 이름 (예: "law-test", "youtube", "coding")
   - `message`: 질문 또는 전달할 내용
-  - 응답을 기다릴 필요 없이 현재 작업을 계속할 때 사용
-  - 결과는 communicate 토픽에 자동 기록됨
+  - 대상 세션이 포크되어 풀 도구로 처리 → 응답이 이 세션에 자동 주입됨
+  - 내 다음 행동을 좌우하는 결과가 필요할 때만 사용 (코드 리뷰 결론, fact check 등)
+  - 결과를 유저가 대상 토픽에서 읽기만 하면 되는 경우엔 `tell_session`을 사용 (컨텍스트 절약)
 
-- `mcp__session-comm__command_session` — 다른 세션에 단방향 명령 전송 (응답 없음)
+- `mcp__session-comm__tell_session` — 다른 세션에 작업/컨텍스트를 **단방향 전달** (응답 없음)
   - `to`: 대상 토픽 이름
-  - `message`: 전달할 명령 내용
-  - 명령은 대상 토픽에 `[from: 세션명]` 형태로 메시지로 표시되고 Claude가 처리
-  - 명령 받은 세션은 다시 `command_session`을 사용할 수 없음 (무한루프 방지)
+  - `message`: 전달할 내용
+  - 메시지는 대상 토픽 히스토리에 기록되고 Claude가 비동기로 처리, 결과는 대상 토픽에 남음
+  - 위임 대상: 오래 걸리는 작업, 자체 완결 작업(실험·벤치마크·모니터링·파일 생성), 상태 업데이트, 컨텍스트 주입
+  - 받은 세션은 다시 `tell_session`을 사용할 수 없음 (무한루프 방지)
+  - 판단 기준: "이 결과가 내 컨텍스트에 필요한가?" → 아니오 = `tell_session`, 예 = `ask_session`
+
+- `mcp__session-comm__abort_session` — 다른 세션의 실행 중인 쿼리 중단
+  - `to`: 대상 토픽 이름
+  - `peek_session`으로 busy 확인 후 사용
+
+- `mcp__session-comm__peek_session` — 모든 세션의 실행 중/유휴 상태 조회
 
 - `mcp__session-comm__ask_cron` — 이 토픽의 크론 세션에 질문 (크론이 수집한 데이터 조회)
   - `message`: 질문 내용
   - 예: 뉴스, 주식, 모니터링 결과 등 크론이 쌓은 데이터 확인 시 사용
 
-## 오케스트레이션 (멀티세션 협업)
+## depth와 체인 제약
 
-여러 세션이 **협력**해서 복잡한 작업을 처리해야 할 때 사용. 유저가 "orchestrate", "조율", "여러 세션 합쳐서", "같이 작업해서" 같은 요청을 하면 이 방식을 사용한다.
-
-- `mcp__session-comm__orchestrate` — 내 세션을 포크해서 복잡한 멀티세션 작업 실행
-  - `task`: 수행할 작업 설명 (어느 세션에 무엇을 물어볼지 포함)
-  - 내부에서 `delegate_to_session`으로 다른 세션들에 작업을 위임하고 결과를 종합해서 반환
-  - 결과는 이 세션으로 직접 돌아옴
-
-- `mcp__session-comm__delegate_to_session` — **orchestrate 내부에서만 사용**. 다른 세션에 작업을 위임하고 결과를 동기적으로 수집
-  - `to`: 대상 세션 이름
-  - `message`: 보낼 메시지
-  - `ask_session`과 달리 응답을 즉시 반환받음
-
-### orchestrate 사용 패턴
-
-```
-# 유저: "coding이랑 research 세션 조율해서 결과 줘"
-→ orchestrate(task="coding 세션에 X를 물어보고, research 세션에 Y를 조회해서 결과를 종합해줘")
-
-# orchestrate 내부에서:
-→ delegate_to_session(to="coding", message="X")   # 결과 즉시 반환
-→ delegate_to_session(to="research", message="Y") # 결과 즉시 반환
-→ 두 결과 종합해서 반환
-```
-
-- `ask_session`은 단순 질의용. 여러 세션이 협력해서 작업을 나눠야 하면 `orchestrate` + `delegate_to_session` 사용
-- 최대 depth 3, 순환 호출 불가
-- 진행 상황(tool use, 중간 과정)은 이 토픽에 실시간으로 표시됨
+- `tell_session`은 최대 **depth 3**까지만 체이닝 가능 (`MAX_TELL_DEPTH = 3`).
+  - 유저 → A: depth 0 → A가 B에게 tell: depth 1 → B가 C에게 tell: depth 2 → C가 D에게 tell: depth 3 → 더 이상 tell 불가.
+- `ask_session`은 대상 세션을 **silent fork**로 띄워서 응답만 받아옴. fork는 reply-only 모드라 outbound 도구(ask/tell/abort)를 쓸 수 없음 → 무한 루프 불가.
+  - 응답이 caller에게 주입될 때 caller의 원래 depth가 복원됨 (tell 체인 카운트가 ask 호출로 인해 리셋되지 않도록).
+- 진행 상황(tool use, 중간 과정)은 이 토픽에 실시간으로 표시됨.
 
 ## 핵심 규칙
 

@@ -16,11 +16,16 @@ export type SessionInjectHandler = (params: {
   messageThreadId: number;
   forumGroupId: number;
   from: string;
+  /** Tell-chain depth for this session (0 = from user, 1+ = via tell_session). */
   depth: number;
-  chain: string[];
+  /** Caller's depth at ask_session time — restored when the silent fork's reply
+   *  is injected back to the caller, so tell-chain caps remain accurate. */
+  fromDepth?: number;
+  /** When true, run as a silent ask_session reply fork (no visible output;
+   *  result auto-injected to `from` topic; outbound MCP tools suppressed). */
+  silent?: boolean;
   requestId?: string;
   contextId?: string;
-  isCommand?: boolean;
 }) => Promise<void>;
 
 let _sessionInjectHandler: SessionInjectHandler | null = null;

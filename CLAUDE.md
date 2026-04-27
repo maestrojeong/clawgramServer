@@ -47,7 +47,7 @@ src/
 │   ├── dm-manager-server.ts      # create/delete_topic, set/get_description
 │   ├── send-file-server.ts       # send_file/send_files
 │   ├── send-text-server.ts       # send_text (텍스트 메시지 전송)
-│   ├── session-comm-server.ts    # send_to_session (세션 간 통신)
+│   ├── session-comm-server.ts    # ask_session, tell_session, abort_session, peek_session, list_sessions (세션 간 통신)
 │   ├── macos-accessibility-server.ts # macOS 접근성 API (UI 자동화)
 │   ├── ocr-server.ts             # OCR (tesseract 기반)
 │   ├── paddleocr-server.ts       # PaddleOCR (한/중/일 정밀 OCR)
@@ -143,8 +143,7 @@ bun run start     # 프로덕션
 - `data/debug-users.json` — 디버그 모드 사용자 목록
 - `data/users/{userId}/cron-outbox/pending.jsonl` — 크론 결과 큐
 - `run/dm-commands/{userId}.jsonl` / `run/dm-responses/{userId}-{requestId}.json` — DM 커맨드 IPC
-- `run/session-inbox/{userId}/{topicName}.jsonl` — 세션 간 메시지 + abort 시그널
-- `run/session-inbox/{userId}/{topicName}.orch` — orchestrate abort 시그널 (MCP 내부 폴링)
+- `run/session-inbox/{userId}/{topicName}.jsonl` — 세션 간 메시지 (`type: "ask" | "tell" | "abort"`)
 
 ## Import 규칙
 

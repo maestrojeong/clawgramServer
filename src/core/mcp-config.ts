@@ -32,21 +32,30 @@ export const ALL_FORUM_MCP_SERVER_NAMES = [
 /** Always-on MCP servers — cannot be removed via enabled whitelist */
 export const REQUIRED_FORUM_MCP_SERVERS = ["session-comm", "send-file", "cron-manager"] as const;
 
-/** Forum session: session-comm + cron-manager */
+/** Forum session: session-comm + cron-manager.
+ *  `depth` = current tell_session chain depth (0 = from user).
+ *  `silent` = pass --reply-only=true so the session-comm MCP suppresses outbound tools
+ *  (ask/tell/abort). Used for ask_session reply forks. */
 export function getForumMcpServers(opts: {
   userId: string;
   session: string;
   depth?: number;
-  chain?: string[];
+  silent?: boolean;
   enabled?: string[] | null;  // null = all defaults, string[] = whitelist
   extra?: Record<string, unknown>;
 }) {
-  const { userId, session, depth = 0, chain = [session], enabled = null, extra = {} } = opts;
+  const { userId, session, depth = 0, silent = false, enabled = null, extra = {} } = opts;
   const all: Record<string, unknown> = {
     ...getCommonMcpServers(userId),
     "session-comm": {
       command: "bun",
-      args: ["run", SESSION_COMM_SERVER, `--user-id=${userId}`, `--topic=${session}`, `--depth=${depth}`, `--chain=${JSON.stringify(chain)}`],
+      args: [
+        "run", SESSION_COMM_SERVER,
+        `--user-id=${userId}`,
+        `--topic=${session}`,
+        `--depth=${depth}`,
+        ...(silent ? ["--reply-only=true"] : []),
+      ],
     },
     "cron-manager": {
       command: "bun",
@@ -64,13 +73,13 @@ export function getForumMcpServers(opts: {
   return { ...base, ...extra };
 }
 
-/** Fork session (orchestrate/delegate_to_session): minimal — session-comm only */
-export function getForkMcpServers(opts: { userId: string; topic: string; depth: number; chain: string[] }) {
-  const { userId, topic, depth, chain } = opts;
+/** Fork session (ask_cron fork): minimal — session-comm only */
+export function getForkMcpServers(opts: { userId: string; topic: string; depth: number }) {
+  const { userId, topic, depth } = opts;
   return {
     "session-comm": {
       command: "bun",
-      args: ["run", SESSION_COMM_SERVER, `--user-id=${userId}`, `--topic=${topic}`, `--depth=${depth}`, `--chain=${JSON.stringify(chain)}`],
+      args: ["run", SESSION_COMM_SERVER, `--user-id=${userId}`, `--topic=${topic}`, `--depth=${depth}`],
     },
   };
 }

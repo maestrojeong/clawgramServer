@@ -99,17 +99,22 @@ interface OutputParams {
   cwd?: string;
   sessionType?: "dm" | "forum" | "ephemeral";
   model?: string;
+  /** When true, runs as a silent ask_session reply fork — suppresses all visible
+   *  output (typing, tool status, streamed text), and the final response is
+   *  injected back to the `from` topic instead of sent to the current chat. */
   silent?: boolean;
   effort?: EffortLevel;
 }
 
 interface SessionChainParams {
   from?: string;
+  /** Tell-chain depth for this session (0 = from user, 1+ = via tell_session). */
   depth?: number;
-  chain?: string[];
+  /** Caller's depth at ask_session time — used to restore the caller's depth
+   *  when a silent fork's reply is injected back. */
+  fromDepth?: number;
   requestId?: string;
   contextId?: string;
-  isCommand?: boolean;
   agents?: Record<string, { description: string; prompt: string; model?: string; tools?: string[]; maxTurns?: number }>;
 }
 
@@ -277,15 +282,15 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
   const control = { abortReason: AbortReason.None, userId, senderId: incomingSenderId, abortController, params };
   activeQueries.set(queryKey, control);
 
-  const isInject = !!(params.from && params.from !== "user") && !params.isCommand;
+  const silent = !!params.silent;
 
   const chatActionOpts: TelegramBot.SendChatActionOptions = messageThreadId ? { message_thread_id: messageThreadId } : {};
-  if (!isInject) {
+  if (!silent) {
     bot.sendChatAction(chatId, "typing", chatActionOpts).catch(() => {});
   }
   const typingInterval = setInterval(() => {
     if (control.abortReason !== AbortReason.None) return clearInterval(typingInterval);
-    if (!isInject) bot.sendChatAction(chatId, "typing", chatActionOpts).catch(() => {});
+    if (!silent) bot.sendChatAction(chatId, "typing", chatActionOpts).catch(() => {});
   }, 4000);
 
   writeQueryState(userId, topicName, prompt);
@@ -302,7 +307,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
   let toolStatusMsgId: number | null = null;
 
   async function showToolStatus(text: string) {
-    if (isInject) return;
+    if (silent) return;
     try {
       if (toolStatusMsgId) {
         await bot.editMessageText(text, { chat_id: chatId, message_id: toolStatusMsgId });
@@ -356,7 +361,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
       if (!textBuffer.trim()) return;
       let toSend = textBuffer.trim();
       textBuffer = "";
-      if (isInject) return;
+      if (silent) return;
       await clearToolStatus();
       for (const chunk of splitMessage(toSend)) {
         await sendToThread(chunk);
@@ -374,7 +379,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
       abortController,
       model: params.model,
       depth: params.depth ?? 0,
-      chain: params.chain ?? [topicName],
+      silent,
       agents: params.agents,
       effort: params.effort,
       mcpEnabled: mcpConfig.enabled,
@@ -389,7 +394,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
             // Ephemeral sessions — don't persist session ID
           } else if (params.sessionType === "dm") {
             setDmSessionId(userId, event.sessionId);
-          } else if (!isInject) {
+          } else if (!silent) {
             setSessionForTopic(topicName, event.sessionId);
           }
           break;
@@ -401,7 +406,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
             if (textBuffer.trim()) lastPreToolText = textBuffer.trim();
             textBuffer = "";
           }
-          if (!isInject && event.name) {
+          if (!silent && event.name) {
             const label = formatToolUse(event.name, event.input || {});
             await showToolStatus(`🔧 ${label}`);
           }
@@ -439,7 +444,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
             const clean = event.content.replace(/\[FILE:\/[^\]]+\]/g, "").trim();
             if (clean) {
               finalResponse = clean;
-              if (!isInject) {
+              if (!silent) {
                 for (const chunk of splitMessage(clean)) {
                   await sendToThread(chunk);
                 }
@@ -450,7 +455,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
         }
 
         case "file": {
-          if (isInject) break;
+          if (silent) break;
           if (seenFiles.has(event.path)) break;
           seenFiles.add(event.path);
           if (isSensitivePath(event.path)) {
@@ -470,7 +475,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
         }
 
         case "error":
-          if (!isInject) await sendToThread(`Error: ${event.content}`);
+          if (!silent) await sendToThread(`Error: ${event.content}`);
           break;
       }
     }
@@ -482,7 +487,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
         await flushText();
       } else if (lastPreToolText) {
         finalResponse = lastPreToolText;
-        if (!isInject) {
+        if (!silent) {
           for (const chunk of splitMessage(lastPreToolText)) {
             await sendToThread(chunk);
           }
@@ -511,7 +516,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
         cacheReadInputTokens: finalUsage.cacheReadInputTokens,
       }, "Claude token usage");
       recordUsage(userId, topicName, finalUsage);
-      if (params.sessionType !== "dm" && params.sessionType !== "ephemeral" && !isInject) {
+      if (params.sessionType !== "dm" && params.sessionType !== "ephemeral" && !silent) {
         checkQueryUsageAlert(userId, topicName, finalUsage);
       }
     }
@@ -521,14 +526,13 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
       appendContext(userId, params.contextId, { role: topicName, content: finalResponse, ts: new Date().toISOString() });
     }
 
-    // Prepare inject params — fired in finally after activeQueries cleanup
+    // Prepare inject params — fired in finally after activeQueries cleanup.
+    // Only silent ask_session reply forks (silent=true with a sender) inject back to sender.
     const senderName = params.from;
-    const depth = params.depth ?? 0;
-    if (senderName && senderName !== "user" && depth > 0 && control.abortReason === AbortReason.None && finalResponse && !params.isCommand) {
+    if (senderName && senderName !== "user" && silent && control.abortReason === AbortReason.None && finalResponse) {
       const senderTopic = getTopicByName(senderName);
       if (senderTopic?.sessionId) {
-        const senderChain = (params.chain ?? []).slice(0, -1);
-        const injectPrompt = `[${topicName} 세션 응답 (depth: ${depth - 1}/5)]\n${finalResponse}`;
+        const injectPrompt = `[${topicName} 세션에서 공유됨]\n${finalResponse}`;
         await sendSplitMsg(senderTopic.forumGroupId, `[← ${topicName}]\n${finalResponse}`, { message_thread_id: senderTopic.messageThreadId }).catch(
           (e) => logger.warn({ err: e }, "ask_session: failed to send response to sender topic")
         );
@@ -544,8 +548,9 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
               description: getTopicDescription(senderName),
             }),
             from: topicName,
-            depth: depth - 1,
-            chain: senderChain,
+            // Resume caller at the depth it was at when it called ask_session,
+            // so subsequent tell_session depth checks remain accurate.
+            depth: params.fromDepth ?? 0,
           },
           errorChatId: senderTopic.forumGroupId,
           errorThreadId: senderTopic.messageThreadId,
@@ -576,10 +581,9 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
       clearQueryState(userId, topicName);
     }
 
-    // If externally aborted while processing a session chain request, notify sender
+    // If externally aborted while processing a silent ask reply, notify sender
     const senderName = params.from;
-    const depth = params.depth ?? 0;
-    if (control.abortReason === AbortReason.External && senderName && senderName !== "user" && depth > 0 && !pendingInject && !params.isCommand) {
+    if (control.abortReason === AbortReason.External && senderName && senderName !== "user" && silent && !pendingInject) {
       const senderTopic = getTopicByName(senderName);
       if (senderTopic) {
         sendMsg(senderTopic.forumGroupId, `[← ${topicName}]\n(abort됨: 외부 중단 요청으로 응답을 받을 수 없습니다)`, {

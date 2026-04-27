@@ -29,7 +29,8 @@ export interface ClaudeQueryOptions {
   abortController?: AbortController;
   model?: string;
   depth?: number;
-  chain?: string[];
+  /** When true, runs the session-comm MCP server in --reply-only mode (suppresses outbound tools). Used for ask_session reply forks. */
+  silent?: boolean;
   agents?: Record<string, { description: string; prompt: string; model?: string; tools?: string[]; maxTurns?: number }>;
   effort?: EffortLevel;
   mcpEnabled?: string[] | null;

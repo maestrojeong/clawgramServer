@@ -6,23 +6,30 @@ import { logger } from "@/core/logger";
 import { USERS_LOG_DIR, SESSION_INBOX_DIR } from "@/core/config";
 import { forkSession } from "@anthropic-ai/claude-agent-sdk";
 import { getSessionInjectHandler, getAbortHandler } from "@/telegram/outbox-types";
-import { loadContext, formatContextForPrompt, appendContext } from "@/core/context-store";
+import { appendContext } from "@/core/context-store";
 import { acquireJsonlLines, cleanupProcessing } from "@/telegram/outbox-utils";
 
 export { SESSION_INBOX_DIR };
 
-interface SessionInboxEntry {
-  type?: "abort";
-  requestId?: string;
-  from?: string;
-  message?: string;
-  contextId?: string;
-  depth?: number;
-  maxDepth?: number;
-  chain?: string[];
-  command?: boolean;
-  timestamp: string;
-}
+type SessionInboxEntry =
+  | { type: "abort"; timestamp: string }
+  | {
+      type: "ask";
+      requestId: string;
+      from: string;
+      message: string;
+      contextId?: string;
+      fromDepth?: number;
+      timestamp: string;
+    }
+  | {
+      type: "tell";
+      from: string;
+      message: string;
+      depth: number;
+      requestId?: string;
+      timestamp: string;
+    };
 
 export async function flushSessionInbox() {
   let userDirs: string[];
@@ -56,12 +63,22 @@ export async function flushSessionInbox() {
       cleanupProcessing(filePath);
 
       for (const line of lines) {
-        let entry: SessionInboxEntry;
+        let raw: Record<string, unknown>;
         try {
-          entry = JSON.parse(line);
+          raw = JSON.parse(line);
         } catch {
           logger.error({ line }, "session-inbox: Invalid JSON, dropping");
           continue;
+        }
+
+        // Normalize legacy entries: { command: true } → { type: "tell" }, no type → { type: "ask" }
+        let entry: SessionInboxEntry;
+        if (raw.type === "abort") {
+          entry = raw as SessionInboxEntry;
+        } else if (raw.command || raw.type === "tell") {
+          entry = { ...raw, type: "tell" } as SessionInboxEntry;
+        } else {
+          entry = { ...raw, type: "ask" } as SessionInboxEntry;
         }
 
         // abort signal: call registered abort handler to cancel the target topic's running query
@@ -87,7 +104,7 @@ export async function flushSessionInbox() {
         const topic = getTopicByName(topicName);
         if (!topic) {
           logger.warn({ userId, topicName }, "session-inbox: Topic not found, dropping entry");
-          if (!entry.command && entry.from) {
+          if (entry.type === "ask") {
             const senderTopic = getTopicByName(entry.from);
             if (senderTopic) {
               sendMsg(senderTopic.forumGroupId, `[← ${topicName}]\n(오류: 토픽 "${topicName}"을 찾을 수 없습니다)`, {
@@ -100,7 +117,7 @@ export async function flushSessionInbox() {
 
         if (!topic.sessionId) {
           logger.warn({ userId, topicName }, "session-inbox: No sessionId, dropping entry");
-          if (!entry.command && entry.from) {
+          if (entry.type === "ask") {
             const senderTopic = getTopicByName(entry.from);
             if (senderTopic) {
               sendMsg(senderTopic.forumGroupId, `[← ${topicName}]\n(오류: "${topicName}" 세션이 아직 초기화되지 않았습니다. 해당 토픽에 먼저 메시지를 보내주세요)`, {
@@ -116,15 +133,14 @@ export async function flushSessionInbox() {
           continue;
         }
 
-        // command_session: show as visible Telegram message + process with output displayed
-        // isCommand: true → isInject=false → tool use, thinking, result all shown in the topic
-        // depth: 1 → command_session not registered (depth===0 only) → prevents re-commanding loops
-        if (entry.command) {
+        // tell_session: show as visible Telegram message + process with output displayed.
+        // silent=false → tool use, thinking, result all shown in the topic.
+        if (entry.type === "tell") {
           const visibleText = `[from: ${entry.from}]\n${entry.message}`;
           await sendSplitMsg(topic.forumGroupId, visibleText, { message_thread_id: topic.messageThreadId }).catch((e) =>
-            logger.warn({ err: e, topicName }, "session-inbox: command sendMsg failed")
+            logger.warn({ err: e, topicName }, "session-inbox: tell sendMsg failed")
           );
-          const commandRequestId = entry.requestId ?? `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const tellRequestId = entry.requestId ?? `tell-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
           await _sessionInjectHandler({
             userId,
             topicName,
@@ -133,35 +149,21 @@ export async function flushSessionInbox() {
             messageThreadId: topic.messageThreadId,
             forumGroupId: topic.forumGroupId,
             from: entry.from,
-            depth: 1,
-            chain: [entry.from, topicName],
-            isCommand: true,
-            requestId: commandRequestId,
-          }).catch((e) => logger.error({ err: e, topicName }, "session-inbox: command inject failed"));
+            // Legacy { command: true } entries predate the depth field — treat as fresh chain.
+            depth: entry.depth ?? 0,
+            silent: false,
+            requestId: tellRequestId,
+          }).catch((e) => logger.error({ err: e, topicName }, "session-inbox: tell inject failed"));
           continue;
         }
 
-        if (entry.depth == null || entry.chain == null) {
-          logger.error({ userId, topicName, entry }, "session-inbox: ask_session entry missing depth/chain, dropping");
-          if (entry.from) {
-            const senderTopic = getTopicByName(entry.from);
-            if (senderTopic) {
-              sendMsg(senderTopic.forumGroupId, `[${topicName} 오류] ask_session 응답 실패: depth/chain 정보 누락`, { message_thread_id: senderTopic.messageThreadId }).catch(() => {});
-            }
-          }
-          continue;
-        }
-        // Load previous context exchanges, then save current message
-        const contextPrefix = entry.contextId
-          ? formatContextForPrompt(loadContext(userId, entry.contextId))
-          : "";
-        if (entry.contextId) {
-          appendContext(userId, entry.contextId, { role: entry.from, content: entry.message, ts: new Date().toISOString() });
-        }
-        const prompt = `${contextPrefix}[${entry.from} 세션에서 온 메시지 (depth: ${entry.depth}/${entry.maxDepth ?? "∞"}, chain: ${entry.chain.join(" → ")})]\n${entry.message}\n\n위 메시지에 응답해주세요. 응답은 자동으로 "${entry.from}" 세션으로 전달됩니다.`;
+        // ask_session: silent fork, response auto-injected back to sender topic.
+        const prompt = `[ASK from ${entry.from}]\n${entry.message}\n\n이건 ${entry.from}이 당신의 context를 참조하려는 요청입니다 (READ-only).\n가지고 있는 정보를 그대로 공유하세요 — 가공·재구성 불필요.\n출력 내용은 자동으로 "${entry.from}" 세션에 돌아갑니다.\n이 요청은 fork에서 처리되므로 당신의 히스토리에 남지 않고, 다른 세션에 tell/ask/abort를 걸 수 없습니다.`;
 
-        logger.info({ userId, topicName, from: entry.from, requestId: entry.requestId, depth: entry.depth },
-          "session-inbox: Injecting via fork");
+        logger.info(
+          { userId, topicName, from: entry.from, requestId: entry.requestId },
+          "session-inbox: Injecting via fork"
+        );
 
         // Show outgoing request in sender's topic (await to ensure [→] appears before [←])
         const senderTopic = getTopicByName(entry.from);
@@ -178,7 +180,7 @@ export async function flushSessionInbox() {
           try {
             const result = await forkSession(topic.sessionId, {
               dir: userCwd,
-              title: `chain: ${entry.from} → ${topicName}`,
+              title: `ask: ${entry.from} → ${topicName}`,
             });
             forkId = result.sessionId;
             logger.info({ forkId, topicName }, "session-inbox: Forked B session");
@@ -195,11 +197,21 @@ export async function flushSessionInbox() {
             messageThreadId: topic.messageThreadId,
             forumGroupId: topic.forumGroupId,
             from: entry.from,
-            depth: entry.depth,
-            chain: entry.chain,
+            // Fork-reply runs with ask/tell/abort tools suppressed — depth is
+            // informational only since the fork cannot initiate further calls.
+            depth: 0,
+            // Caller's depth at ask_session time — restored when the reply is
+            // injected back so depth-based tell chain caps remain accurate.
+            fromDepth: entry.fromDepth ?? 0,
+            silent: true,
             requestId: entry.requestId,
             contextId: entry.contextId,
           });
+
+          // Inject succeeded — now safe to persist the asker's message to context.
+          if (entry.contextId) {
+            appendContext(userId, entry.contextId, { role: entry.from, content: entry.message, ts: new Date().toISOString() });
+          }
         } catch (err) {
           logger.error({ err, userId, topicName, requestId: entry.requestId }, "session-inbox: sessionInject failed");
           if (senderTopic) {
