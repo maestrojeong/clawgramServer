@@ -256,10 +256,14 @@ async function main() {
 
 async function runJob() {
   const topicRow = readTopicRow();
-  const workDir = topicRow?.cwd || homedir();
+  // ~/ 등 tilde 확장 처리 (Bun.spawnSync는 shell expansion 미지원)
+  const rawCwd = topicRow?.cwd || homedir();
+  const workDir = rawCwd.replace(/^~/, homedir());
 
   // 1. Run Python script to get prompt
-  const proc = Bun.spawnSync(["uv", "run", "--project", CRON_DIR, "python", scriptPath], {
+  // uv 절대경로 사용 (pm2 환경에서 ~/.local/bin이 PATH에 없을 수 있음)
+  const uvBin = `${homedir()}/.local/bin/uv`;
+  const proc = Bun.spawnSync([uvBin, "run", "--project", CRON_DIR, "python", scriptPath], {
     cwd: workDir,
     stderr: "pipe",
   });

@@ -1,14 +1,14 @@
 import {
   SEND_FILE_SERVER, SESSION_COMM_SERVER, CRON_MANAGER_SERVER, CRON_DM_SERVER,
-  DM_MANAGER_SERVER, TOKEN_STATS_SERVER,
+  DM_MANAGER_SERVER, TOKEN_STATS_SERVER, BUN_BIN,
 } from "@/core/config";
 
 // --- Common MCP servers (shared across DM and forum sessions) ---
 
 function getCommonMcpServers(userId: string) {
   return {
-    "send-file":            { command: "bun", args: ["run", SEND_FILE_SERVER, `--user-id=${userId}`] },
-    "token-stats":          { command: "bun", args: ["run", TOKEN_STATS_SERVER, `--user-id=${userId}`] },
+    "send-file":            { command: BUN_BIN, args: ["run", SEND_FILE_SERVER, `--user-id=${userId}`] },
+    "token-stats":          { command: BUN_BIN, args: ["run", TOKEN_STATS_SERVER, `--user-id=${userId}`] },
   };
 }
 
@@ -19,8 +19,8 @@ export function getDmMcpServers(opts: { userId: string }) {
   const { userId } = opts;
   return {
     ...getCommonMcpServers(userId),
-    "dm-manager": { command: "bun", args: ["run", DM_MANAGER_SERVER, `--user-id=${userId}`] },
-    "cron-dm": { command: "bun", args: ["run", CRON_DM_SERVER, `--user-id=${userId}`] },
+    "dm-manager": { command: BUN_BIN, args: ["run", DM_MANAGER_SERVER, `--user-id=${userId}`] },
+    "cron-dm": { command: BUN_BIN, args: ["run", CRON_DM_SERVER, `--user-id=${userId}`] },
   };
 }
 
@@ -48,7 +48,7 @@ export function getForumMcpServers(opts: {
   const all: Record<string, unknown> = {
     ...getCommonMcpServers(userId),
     "session-comm": {
-      command: "bun",
+      command: BUN_BIN,
       args: [
         "run", SESSION_COMM_SERVER,
         `--user-id=${userId}`,
@@ -58,7 +58,7 @@ export function getForumMcpServers(opts: {
       ],
     },
     "cron-manager": {
-      command: "bun",
+      command: BUN_BIN,
       args: ["run", CRON_MANAGER_SERVER, `--user-id=${userId}`, `--topic=${session}`],
     },
   };
@@ -78,7 +78,7 @@ export function getForkMcpServers(opts: { userId: string; topic: string; depth: 
   const { userId, topic, depth } = opts;
   return {
     "session-comm": {
-      command: "bun",
+      command: BUN_BIN,
       args: ["run", SESSION_COMM_SERVER, `--user-id=${userId}`, `--topic=${topic}`, `--depth=${depth}`],
     },
   };

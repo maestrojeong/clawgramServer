@@ -16,7 +16,7 @@ import { promisify } from "node:util";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { PROJECT_ROOT, SERVER_NAME, SESSIONS_DB, USERS_LOG_DIR } from "@/core/config";
+import { PROJECT_ROOT, SERVER_NAME, SESSIONS_DB, USERS_LOG_DIR, BUN_BIN } from "@/core/config";
 import { mcpError, mcpOk, parseUserIdArg } from "@/mcp/mcp-helpers";
 import {
   computeNextRun,
@@ -134,7 +134,7 @@ server.tool(
       process.stderr.write(`warn: cron-manager: failed to check existing jobs: ${e instanceof Error ? e.message : e}\n`);
     }
 
-    const cmd = `bun run ${shellQuote(RUNNER_TS)} --script ${shellQuote(script)} --topic ${shellQuote(topic)} --user-id ${shellQuote(userId)} --cron-name ${shellQuote(name)}`;
+    const cmd = `${shellQuote(BUN_BIN)} run ${shellQuote(RUNNER_TS)} --script ${shellQuote(script)} --topic ${shellQuote(topic)} --user-id ${shellQuote(userId)} --cron-name ${shellQuote(name)}`;
 
     // Suppress pm2's immediate-on-start execution: runner.ts consumes this
     // marker on its first invocation and exits before spawning Python / claudeQuery.

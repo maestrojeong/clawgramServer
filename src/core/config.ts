@@ -11,6 +11,9 @@ export const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..
 
 export const CLAUDE_EXECUTABLE = resolve(HOME, ".local/bin/claude");
 
+// pm2 환경에서 PATH에 없을 수 있으므로 절대경로 사용
+export const BUN_BIN = resolve(HOME, ".bun/bin/bun");
+
 // --- Server identity ---
 // SERVER_NAME identifies this bot instance among other bots/servers sharing the same
 // supergroups. Used as a [prefix] on all forum topic names so each server can tell which
