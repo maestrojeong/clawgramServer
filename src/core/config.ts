@@ -1,5 +1,5 @@
 import { resolve, dirname } from "path";
-import { readFileSync, mkdirSync } from "fs";
+import { readFileSync, mkdirSync, existsSync } from "fs";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
 
@@ -9,7 +9,19 @@ const HOME = homedir();
 // Split into fileURLToPath → dirname → resolve to avoid that.
 export const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
-export const CLAUDE_EXECUTABLE = resolve(HOME, ".local/bin/claude");
+function resolveClaudeExecutable(): string {
+  if (process.env.CLAUDE_EXECUTABLE_PATH) return process.env.CLAUDE_EXECUTABLE_PATH;
+  const candidates = [
+    resolve(HOME, ".local/bin/claude"),
+    resolve(HOME, ".npm-global/bin/claude"),
+    resolve(HOME, ".npm/bin/claude"),
+    "/usr/local/bin/claude",
+    "/usr/bin/claude",
+  ];
+  return candidates.find(existsSync) ?? candidates[0];
+}
+
+export const CLAUDE_EXECUTABLE = resolveClaudeExecutable();
 
 // pm2 환경에서 PATH에 없을 수 있으므로 절대경로 사용
 export const BUN_BIN = resolve(HOME, ".bun/bin/bun");
