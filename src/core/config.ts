@@ -55,6 +55,10 @@ export const DM_MANAGER_SERVER = resolve(PROJECT_ROOT, "src/mcp/dm-manager-serve
 
 export const TOKEN_STATS_SERVER = resolve(PROJECT_ROOT, "src/mcp/token-stats-server.ts");
 
+export const TOPIC_SELF_CONFIG_SERVER = resolve(PROJECT_ROOT, "src/mcp/topic/self-config-server.ts");
+
+export const TOPIC_MANAGER_SERVER = resolve(PROJECT_ROOT, "src/mcp/topic/manager-server.ts");
+
 export const META_DIR = resolve(PROJECT_ROOT, "meta");
 
 // Persistent state (survives restarts, long-lived)
@@ -132,6 +136,12 @@ export function loadAgentPrompt(filename: string): AgentDef {
     prompt: match[2].trim(),
   };
 }
+
+// --- Model constants ---
+export const MODEL_SONNET = "claude-sonnet-4-6";
+export const MODEL_OPUS = "claude-opus-4-7";
+export const MODEL_HAIKU = "claude-haiku-4-5-20251001";
+export const ADVISOR_MODEL = MODEL_OPUS;
 
 export const SYSTEM_PROMPT = loadPrompt("topic-system.md");
 export const DM_SYSTEM_PROMPT = loadPrompt("dm-system.md");

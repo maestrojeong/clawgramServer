@@ -5,8 +5,9 @@ import { bot } from "@/telegram/client";
 import { sendMsg, sendHtmlMsg, sendFileToChat, splitMessage, sendSplitMsg } from "@/telegram/helpers";
 import { writeLog } from "@/telegram/logging";
 import { isDebug, writeQueryState, clearQueryState } from "@/telegram/workspace";
-import { claudeQuery, formatToolUse } from "@/core/claude";
-import type { TokenUsage, EffortLevel } from "@/core/types";
+import { runAgent, FALLBACK_AGENT } from "@/core/agents";
+import { formatToolUse } from "@/core/agents/tool-format";
+import type { TokenUsage, EffortLevel, AgentKind } from "@/core/types";
 import { logger } from "@/core/logger";
 import { homedir } from "os";
 import { USERS_LOG_DIR } from "@/core/config";
@@ -33,7 +34,11 @@ import {
   getTopicMcpConfig,
   getTopicDescription,
   getTopicCwd,
+  getTopicAgent,
+  getLastShownConfig,
+  setLastShownConfig,
 } from "@/telegram/forum-sessions";
+import { getRegistry } from "@/core/agents/registry";
 import { buildTopicSystemPrompt } from "@/core/config";
 import { recordUsage } from "@/core/token-stats";
 import { checkQueryUsageAlert } from "@/core/session-alert";
@@ -62,6 +67,33 @@ function isSensitivePath(filePath: string): boolean {
     // File doesn't exist — no symlink concern
   }
   return false;
+}
+
+// --- Footer helpers ---
+
+function attachFooterToChunks(chunks: string[], footer: string | null, limit = 4096): string[] {
+  if (!footer || chunks.length === 0) return chunks;
+  const last = chunks[chunks.length - 1];
+  const combined = `${last}\n\n${footer}`;
+  if (combined.length <= limit) chunks[chunks.length - 1] = combined;
+  else chunks.push(footer);
+  return chunks;
+}
+
+function buildConfigFooter(topicName: string, sessionType: string | undefined): string | null {
+  if (sessionType === "dm" || sessionType === "ephemeral") return null;
+  const topic = getTopicByName(topicName);
+  if (!topic) return null;
+  const agent = topic.agent;
+  const registry = getRegistry(agent);
+  const model = topic.model ?? registry.defaultModel;
+  const effort = topic.effort ?? registry.defaultEffort;
+  const last = getLastShownConfig(topicName);
+  if (last && last.agent === agent && last.model === model && (last.effort ?? undefined) === effort) {
+    return null;
+  }
+  setLastShownConfig(topicName, agent, model, effort);
+  return `*${agent} · ${registry.footerLabel(model, effort)}*`;
 }
 
 // --- cwd validation ---
@@ -99,11 +131,10 @@ interface OutputParams {
   cwd?: string;
   sessionType?: "dm" | "forum" | "ephemeral";
   model?: string;
-  /** When true, runs as a silent ask_session reply fork — suppresses all visible
-   *  output (typing, tool status, streamed text), and the final response is
-   *  injected back to the `from` topic instead of sent to the current chat. */
   silent?: boolean;
   effort?: EffortLevel;
+  /** Override agent (default: loaded from DB for forum topics, 'claude' for DM). */
+  agent?: AgentKind;
 }
 
 interface SessionChainParams {
@@ -348,6 +379,13 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
         ? getTopicMcpConfig(topicName)
         : { enabled: null, extra: {} };
 
+    // Load agent: explicit override > DB value for forum topics > fallback
+    const agent: AgentKind =
+      params.agent ??
+      (params.sessionType !== "dm" && params.sessionType !== "ephemeral"
+        ? getTopicAgent(topicName)
+        : FALLBACK_AGENT);
+
     let textBuffer = "";
     let lastPreToolText = "";
     let finalResponse = "";
@@ -368,13 +406,14 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
       }
     }
 
-    for await (const event of claudeQuery({
+    for await (const event of runAgent({
+      agent,
       prompt,
       sessionId: sessionId || undefined,
       cwd: userCwd,
       userId: String(userId),
       session: topicName,
-      systemPrompt: params.systemPrompt,
+      systemPrompt: params.systemPrompt ?? "",
       sessionType: params.sessionType,
       abortController,
       model: params.model,
@@ -388,6 +427,9 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
       if (control.abortReason !== AbortReason.None) break;
 
       switch (event.type) {
+        case "user_message":
+          break;
+
         case "session":
           currentSessionId = event.sessionId;
           if (params.sessionType === "ephemeral") {
@@ -445,7 +487,9 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
             if (clean) {
               finalResponse = clean;
               if (!silent) {
-                for (const chunk of splitMessage(clean)) {
+                const footer = buildConfigFooter(topicName, params.sessionType);
+                const chunks = attachFooterToChunks(splitMessage(clean), footer);
+                for (const chunk of chunks) {
                   await sendToThread(chunk);
                 }
               }

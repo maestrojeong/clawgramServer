@@ -9,12 +9,16 @@ import { handleDmCommand, handleForumConnect, handleForumFork, handleForumSpawn,
 import { startOutboxPolling, onSessionInject, onAbortRequest } from "@/telegram/outbox";
 import {
   findUserByGroupAndThread,
+  findUserByGroupId,
+  getAllTopicsForGroup,
   getCommunicateThreadId,
   getDmSessionId,
   getTopicDescription,
   getTopicModel,
   flushSessionCache,
+  removeForumGroup,
 } from "@/telegram/forum-sessions";
+import { tryAutoConnectFromPromotion, tryAutoConnectFromMessage } from "@/telegram/auto-connect";
 import { USERS_LOG_DIR, DM_SYSTEM_PROMPT, buildTopicSystemPrompt } from "@/core/config";
 import { logger } from "@/core/logger";
 
@@ -178,6 +182,39 @@ bot.on("polling_error", async (err: any) => {
   }
 });
 
+// --- my_chat_member: auto-connect on promotion, cleanup on kick ---
+bot.on("my_chat_member", async (update: any) => {
+  // Layer 1: auto-connect when bot is promoted to admin in a forum supergroup
+  if (await tryAutoConnectFromPromotion(update)) return;
+
+  const newStatus: string = update.new_chat_member?.status;
+  const groupId: number = update.chat?.id;
+  if (newStatus !== "kicked") return;
+  if (!groupId) return;
+
+  const userId = findUserByGroupId(groupId);
+  if (userId === null) return;
+
+  logger.warn({ userId, groupId }, "Bot removed from forum group, cleaning up");
+
+  const topics = getAllTopicsForGroup(groupId);
+  for (const topic of topics) {
+    const queryKey = `${userId}:${topic.name}`;
+    const running = activeQueries.get(queryKey);
+    if (running) {
+      running.abortReason = AbortReason.External;
+      running.abortController.abort();
+    }
+  }
+
+  removeForumGroup(userId, groupId);
+
+  await sendMsg(
+    userId,
+    `⚠️ 봇이 그룹에서 제거되었습니다 (세션 ${topics.length}개 정리됨).\n다시 사용하려면 봇을 추가하고 관리자로 승격하세요 (자동 연결됩니다).`,
+  ).catch((e) => logger.warn({ err: e, userId }, "my_chat_member: DM notify failed"));
+});
+
 // --- Sync meta agents and CLAUDE.md to all existing users at startup ---
 syncMetaAgents();
 syncMetaClaudeMd();
@@ -214,6 +251,8 @@ bot.on("message", async (msg) => {
   let topicMatch: ReturnType<typeof findUserByGroupAndThread> = null;
   if (msg.chat.type === "supergroup") {
     if (isAdmin && await handleForumConnect(msg)) return;
+    // Layer 2 auto-connect: bot was offline during promotion, catch up on first message
+    if (isAdmin && await tryAutoConnectFromMessage(msg)) return;
     if (!msg.message_thread_id) return;
 
     const commThreadId = isAdmin ? getCommunicateThreadId(userId) : null;

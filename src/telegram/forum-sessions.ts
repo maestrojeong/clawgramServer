@@ -3,7 +3,8 @@ import { mkdirSync } from "fs";
 import { dirname } from "path";
 import { logger } from "@/core/logger";
 import { SESSIONS_DB, SERVER_NAME } from "@/core/config";
-import type { EffortLevel } from "@/core/types";
+import type { AgentKind, AgentSettings, EffortLevel } from "@/core/types";
+import { FALLBACK_AGENT, isAgentKind } from "@/core/agents";
 
 /** Listener called when a user disconnects a forum group. Registered externally to avoid circular deps. */
 let _onGroupRemoveListener: ((userId: number, groupId: number) => void) | null = null;
@@ -38,9 +39,11 @@ db.exec(`
     description TEXT,
     model TEXT,
     cwd TEXT,
-    effort TEXT CHECK (effort IN ('low', 'medium', 'high', 'max')),
+    effort TEXT CHECK (effort IN ('low', 'medium', 'high', 'max', 'xhigh', 'minimal')),
     mcp_enabled TEXT,
     mcp_extra TEXT,
+    agent TEXT,
+    agent_settings TEXT,
     PRIMARY KEY (server_name, forum_group_id, name),
     UNIQUE (forum_group_id, message_thread_id)
   );
@@ -54,6 +57,11 @@ try { db.exec("ALTER TABLE topics ADD COLUMN mcp_extra TEXT"); } catch {}
 try { db.exec("ALTER TABLE topics ADD COLUMN cwd TEXT"); } catch {}
 try { db.exec("ALTER TABLE topics ADD COLUMN server_name TEXT"); } catch {}
 try { db.exec("ALTER TABLE topics ADD COLUMN fork_origin TEXT"); } catch {}
+try { db.exec("ALTER TABLE topics ADD COLUMN agent TEXT"); } catch {}
+try { db.exec("ALTER TABLE topics ADD COLUMN agent_settings TEXT"); } catch {}
+try { db.exec("ALTER TABLE topics ADD COLUMN last_shown_agent TEXT"); } catch {}
+try { db.exec("ALTER TABLE topics ADD COLUMN last_shown_model TEXT"); } catch {}
+try { db.exec("ALTER TABLE topics ADD COLUMN last_shown_effort TEXT"); } catch {}
 // Rename system_prompt_extra → description
 {
   const cols = db.query<{ name: string }, []>("PRAGMA table_info(topics)").all();
@@ -163,9 +171,9 @@ export interface ForumTopicInfo {
   model?: string;
   cwd?: string;
   effort?: EffortLevel;
-  /** Parent topic name if this topic was created via /fork; undefined for originals.
-   *  Points to the root parent (fork-of-fork still references the original). */
   forkOrigin?: string;
+  agent: AgentKind;
+  agentSettings: AgentSettings;
 }
 
 export interface UserForumConfig {
@@ -189,6 +197,8 @@ type TopicRow = {
   cwd: string | null;
   effort: EffortLevel | null;
   fork_origin: string | null;
+  agent: string | null;
+  agent_settings: string | null;
 };
 
 type UserRow = {
@@ -199,13 +209,21 @@ type UserRow = {
   communicate_thread_id: number | null;
 };
 
+function parseAgentSettings(raw: string | null): AgentSettings {
+  if (!raw) return {};
+  try { return JSON.parse(raw) as AgentSettings; } catch { return {}; }
+}
+
 function rowToTopic(row: TopicRow): ForumTopicInfo {
+  const agent = isAgentKind(row.agent) ? row.agent : FALLBACK_AGENT;
   return {
     forumGroupId: row.forum_group_id,
     messageThreadId: row.message_thread_id,
     sessionId: row.session_id ?? "",
     createdAt: row.created_at,
     name: row.name,
+    agent,
+    agentSettings: parseAgentSettings(row.agent_settings),
     ...(row.cron_session_id && { cronSessionId: row.cron_session_id }),
     ...(row.description && { description: row.description }),
     ...(row.model && { model: row.model }),
@@ -265,6 +283,17 @@ export function getForumGroupIds(userId: number): number[] {
 /** Check if a user has a specific forum group connected */
 export function hasForumGroup(userId: number, groupId: number): boolean {
   return getForumGroupIds(userId).includes(groupId);
+}
+
+/** Find the first user who has this group connected. Returns userId or null. */
+export function findUserByGroupId(groupId: number): number | null {
+  const rows = db.query<{ id: string; forum_group_ids: string }, []>(
+    "SELECT id, forum_group_ids FROM users"
+  ).all();
+  for (const row of rows) {
+    if (parseGroupIds(row.forum_group_ids).includes(groupId)) return Number(row.id);
+  }
+  return null;
 }
 
 /** Add a forum group to user's group list. Returns true if newly added. */
@@ -610,5 +639,71 @@ export function setTopicForkOrigin(topicName: string, origin: string): boolean {
   const result = db.query("UPDATE topics SET fork_origin = ? WHERE server_name = ? AND name = ?").run(
     origin, SERVER_NAME, topicName
   );
+  return result.changes > 0;
+}
+
+/** Get the active agent for a topic. Defaults to 'claude' for legacy rows. */
+export function getTopicAgent(topicName: string): AgentKind {
+  const row = db.query<{ agent: string | null }, [string, string]>(
+    "SELECT agent FROM topics WHERE server_name = ? AND name = ?"
+  ).get(SERVER_NAME, topicName);
+  if (!row) return FALLBACK_AGENT;
+  return isAgentKind(row.agent) ? row.agent : FALLBACK_AGENT;
+}
+
+/** Set the active agent for a topic. Also clears session_id and model (model is agent-specific). */
+export function setTopicAgent(topicName: string, agent: AgentKind): boolean {
+  const result = db.query(
+    "UPDATE topics SET agent = ?, session_id = NULL, model = NULL WHERE server_name = ? AND name = ?"
+  ).run(agent, SERVER_NAME, topicName);
+  return result.changes > 0;
+}
+
+/** Get the full agent_settings JSON for a topic. */
+export function getTopicAgentSettings(topicName: string): AgentSettings {
+  const row = db.query<{ agent_settings: string | null }, [string, string]>(
+    "SELECT agent_settings FROM topics WHERE server_name = ? AND name = ?"
+  ).get(SERVER_NAME, topicName);
+  return parseAgentSettings(row?.agent_settings ?? null);
+}
+
+/** Update agent_settings for a topic. */
+export function setTopicAgentSettings(topicName: string, settings: AgentSettings): boolean {
+  const result = db.query(
+    "UPDATE topics SET agent_settings = ? WHERE server_name = ? AND name = ?"
+  ).run(JSON.stringify(settings), SERVER_NAME, topicName);
+  return result.changes > 0;
+}
+
+/** Get the last-shown agent/model/effort footer config for a topic. */
+export function getLastShownConfig(topicName: string): {
+  agent: AgentKind | null;
+  model: string | null;
+  effort: string | null;
+} | null {
+  const row = db.query<{
+    last_shown_agent: string | null;
+    last_shown_model: string | null;
+    last_shown_effort: string | null;
+  }, [string, string]>(
+    "SELECT last_shown_agent, last_shown_model, last_shown_effort FROM topics WHERE server_name = ? AND name = ?"
+  ).get(SERVER_NAME, topicName);
+  if (!row) return null;
+  const agent = row.last_shown_agent && isAgentKind(row.last_shown_agent)
+    ? row.last_shown_agent
+    : null;
+  return { agent, model: row.last_shown_model, effort: row.last_shown_effort };
+}
+
+/** Update the last-shown footer config for a topic. */
+export function setLastShownConfig(
+  topicName: string,
+  agent: AgentKind,
+  model: string,
+  effort: string | undefined,
+): boolean {
+  const result = db.query(
+    "UPDATE topics SET last_shown_agent = ?, last_shown_model = ?, last_shown_effort = ? WHERE server_name = ? AND name = ?"
+  ).run(agent, model, effort ?? null, SERVER_NAME, topicName);
   return result.changes > 0;
 }

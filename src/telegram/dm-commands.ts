@@ -12,7 +12,9 @@ import {
   setTopicCwd,
   setTopicMcpEnabled,
   setTopicMcpExtra,
+  setTopicAgent,
 } from "@/telegram/forum-sessions";
+import type { AgentKind } from "@/core/types";
 import { logger } from "@/core/logger";
 import type { EffortLevel } from "@/core/types";
 import { DM_CMD_DIR, DM_RESP_DIR, withTopicPrefix } from "@/core/config";
@@ -137,6 +139,10 @@ export async function flushDmCommands() {
           writeResponse(respFile, { success: ok, error: ok ? undefined : "Topic not found" });
         } else if (cmd.action === "set_topic_mcp_extra") {
           const ok = setTopicMcpExtra(withTopicPrefix(cmd.params.topic as string), cmd.params.extra as Record<string, unknown>);
+          writeResponse(respFile, { success: ok, error: ok ? undefined : "Topic not found" });
+        } else if (cmd.action === "set_topic_agent") {
+          const agent = cmd.params.agent as AgentKind;
+          const ok = setTopicAgent(withTopicPrefix(cmd.params.topic as string), agent);
           writeResponse(respFile, { success: ok, error: ok ? undefined : "Topic not found" });
         } else {
           writeResponse(respFile, { success: false, error: `Unknown action: ${cmd.action}` });

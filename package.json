@@ -12,6 +12,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.91",
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "@openai/codex-sdk": "^0.128.0",
     "@playwright/mcp": "^0.0.68",
     "next": "16.1.6",
     "node-telegram-bot-api": "^0.67.0",

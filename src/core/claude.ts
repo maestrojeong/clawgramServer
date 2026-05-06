@@ -81,8 +81,8 @@ export async function* claudeQuery(
     ) as Options["mcpServers"],
     abortController: opts.abortController,
     ...(opts.model ? { model: opts.model } : {}),
-    ...(opts.agents ? { agents: opts.agents } : {}),
-    ...(opts.effort ? { effort: opts.effort } : {}),
+    ...(opts.agents ? { agents: opts.agents as Options["agents"] } : {}),
+    ...(opts.effort ? { effort: opts.effort as Options["effort"] } : {}),
     settingSources: ["project"] as Options["settingSources"],
     systemPrompt: opts.systemPrompt ?? SYSTEM_PROMPT,
   };

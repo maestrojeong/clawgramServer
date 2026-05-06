@@ -23,6 +23,7 @@ interface TopicEntry {
   model?: string;
   cwd?: string;
   effort?: 'low' | 'medium' | 'high' | 'max';
+  agent?: string;
   mcpEnabled?: string[] | null;
   mcpExtra?: Record<string, unknown>;
 }
@@ -61,9 +62,10 @@ function getUserConfig(): UserConfig | null {
       model: string | null;
       cwd: string | null;
       effort: string | null;
+      agent: string | null;
       mcp_enabled: string | null;
       mcp_extra: string | null;
-    }, string>("SELECT name, message_thread_id, forum_group_id, session_id, created_at, description, model, cwd, effort, mcp_enabled, mcp_extra FROM topics WHERE server_name = ?").all(SERVER_NAME);
+    }, string>("SELECT name, message_thread_id, forum_group_id, session_id, created_at, description, model, cwd, effort, agent, mcp_enabled, mcp_extra FROM topics WHERE server_name = ?").all(SERVER_NAME);
 
     const topics: { [name: string]: TopicEntry } = {};
     for (const row of topicRows) {
@@ -82,6 +84,7 @@ function getUserConfig(): UserConfig | null {
         ...(row.model && { model: row.model }),
         ...(row.cwd && { cwd: row.cwd }),
         ...(row.effort && { effort: row.effort as TopicEntry['effort'] }),
+        ...(row.agent && { agent: row.agent }),
         ...(mcpEnabled !== undefined && { mcpEnabled }),
         ...(mcpExtra !== undefined && { mcpExtra }),
       };
@@ -181,8 +184,8 @@ function getAllTopics(): { forumGroupTitles: Record<string, string>; topics: Top
     const topicRows = db.query<{
       name: string; message_thread_id: number; forum_group_id: number;
       session_id: string | null; created_at: string; description: string | null;
-      model: string | null; cwd: string | null; effort: string | null;
-    }, string>("SELECT name, message_thread_id, forum_group_id, session_id, created_at, description, model, cwd, effort FROM topics WHERE server_name = ? ORDER BY forum_group_id, name").all(SERVER_NAME);
+      model: string | null; cwd: string | null; effort: string | null; agent: string | null;
+    }, string>("SELECT name, message_thread_id, forum_group_id, session_id, created_at, description, model, cwd, effort, agent FROM topics WHERE server_name = ? ORDER BY forum_group_id, name").all(SERVER_NAME);
 
     const topics: TopicEntry[] = topicRows.map((row) => ({
       name: row.name,
@@ -194,6 +197,7 @@ function getAllTopics(): { forumGroupTitles: Record<string, string>; topics: Top
       ...(row.model && { model: row.model }),
       ...(row.cwd && { cwd: row.cwd }),
       ...(row.effort && { effort: row.effort as TopicEntry['effort'] }),
+      ...(row.agent && { agent: row.agent }),
     }));
     return { forumGroupTitles: titleMap, topics };
   } finally { db.close(); }
@@ -251,11 +255,12 @@ server.tool(
       }
       const lines = topics.map((t) => {
         const status = t.sessionId ? `active` : "new";
+        const agent = ` [${t.agent ?? "claude"}]`;
         const model = t.model ? ` [${t.model}]` : " [default]";
         const effort = t.effort ? ` effort:${t.effort}` : "";
         const cwdLine = t.cwd ? `\n      cwd: ${t.cwd}` : "";
         const desc = t.description ? `\n      desc: ${t.description.slice(0, 80)}${t.description.length > 80 ? "..." : ""}` : "";
-        return `  - ${t.name} (thread:${t.messageThreadId})\n      status: ${status}${model}${effort}${cwdLine}${desc}`;
+        return `  - ${t.name} (thread:${t.messageThreadId})\n      status: ${status}${agent}${model}${effort}${cwdLine}${desc}`;
       });
       sections.push(`Group: ${groupTitle}\n    group_id: ${gid}\n${lines.join("\n")}`);
     }
@@ -718,6 +723,48 @@ server.tool(
     } catch (err) {
       return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
     }
+  }
+);
+
+server.tool(
+  "set_topic_agent",
+  "Switch the agent backend for a specific topic between 'claude' (Claude Code SDK / Anthropic) and 'codex' (Codex SDK / OpenAI). The session resets so the new backend starts fresh on the next message. Use only when the user explicitly asks to switch agents.",
+  {
+    topic: z.string().describe("Topic name"),
+    agent: z.enum(["claude", "codex"]).describe("Agent backend: 'claude' or 'codex'"),
+  },
+  async ({ topic, agent }) => {
+    const config = getUserConfig();
+    if (!config?.topics[withTopicPrefix(topic)]) {
+      return { content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found.` }], isError: true };
+    }
+    const requestId = genRequestId();
+    writeCommand({ requestId, action: "set_topic_agent", params: { topic, agent }, timestamp: new Date().toISOString() });
+    try {
+      const resp = await waitForResponse(requestId);
+      if (resp.success) {
+        return { content: [{ type: "text" as const, text: `Agent for "${topic}" switched to '${agent}'.\n\n다음 메시지부터 적용됩니다.` }] };
+      }
+      return { content: [{ type: "text" as const, text: `Error: ${resp.error || "unknown"}` }], isError: true };
+    } catch (err) {
+      return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "get_topic_agent",
+  "Get the current agent backend ('claude' or 'codex') for a specific topic.",
+  {
+    topic: z.string().describe("Topic name"),
+  },
+  async ({ topic }) => {
+    const config = getUserConfig();
+    const t = config?.topics[withTopicPrefix(topic)];
+    if (!t) {
+      return { content: [{ type: "text" as const, text: `Error: Topic "${topic}" not found.` }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: `Topic "${topic}" agent: ${t.agent ?? "claude"}` }] };
   }
 );
 
