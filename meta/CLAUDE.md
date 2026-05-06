@@ -58,7 +58,7 @@ user_{userId}/
 
 ### 정기 작업 (Cron)
 - **pm2 + uv 기반 cron**: 세션과 독립적으로 영속 실행
-- 스크립트 위치: `~/claudeCodeTelegram/cron/`
+- 스크립트 위치: `~/clawgramServer/cron/`
 - 실행 cwd: 프로젝트 루트 (`PROJECT_ROOT`)
 - MCP 도구:
   - `mcp__cron-manager__cron_create` — cron job 생성 (name, script, cron, topic)
@@ -67,7 +67,7 @@ user_{userId}/
   - `mcp__cron-manager__cron_logs` — cron job 로그 조회
 - 스크립트의 stdout → `claude -p` 프롬프트로 사용, 결과는 topic에 전송
 - 활성 쿼리가 있으면 자동 대기 후 실행 (세션 충돌 방지)
-- 의존성 추가: `cd ~/claudeCodeTelegram/cron && uv add {패키지}`
+- 의존성 추가: `cd ~/clawgramServer/cron && uv add {패키지}`
 - **내장 `/loop`, `CronCreate`는 사용하지 않는다** (세션 끊기면 소멸)
 
 ### 작업 디렉토리 (cwd)

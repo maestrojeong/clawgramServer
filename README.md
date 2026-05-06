@@ -62,9 +62,9 @@ cron/                        # 크론 작업 러너 (별도 Python 프����
 bun run src/telegram/bot.ts
 
 # pm2로 실행 (권장)
-cd ~/claudeCodeTelegram && \
+cd ~/clawgramServer && \
   export $(cat .env | xargs) && \
-  pm2 start "bun run bot" --name claudeCodeTelegram --cwd ~/claudeCodeTelegram
+  pm2 start "bun run bot" --name clawgramServer --cwd ~/clawgramServer
 
 # 대시보드
 bun run dev    # 개발

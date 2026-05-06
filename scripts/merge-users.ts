@@ -61,4 +61,4 @@ for (const u of srcUsers) {
   console.log(`✅ ${u.id} (${u.forum_group_title}): ${row?.topics ?? 0}개 토픽`);
 }
 
-console.log("\n머지 완료. 봇을 재시작하세요: pm2 restart claudeCodeTelegram");
+console.log("\n머지 완료. 봇을 재시작하세요: pm2 restart clawgramServer");

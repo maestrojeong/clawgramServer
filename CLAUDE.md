@@ -101,7 +101,7 @@ bot.ts → all above (엔트리포인트)
 bun run src/telegram/bot.ts
 
 # pm2로 실행 (환경변수 충돌 방지를 위해 .env를 강제 로드)
-cd ~/claudeCodeTelegram && export $(cat .env | xargs) && pm2 start "bun run bot" --name claudeCodeTelegram --cwd ~/claudeCodeTelegram
+cd ~/clawgramServer && export $(cat .env | xargs) && pm2 start "bun run bot" --name clawgramServer --cwd ~/clawgramServer
 
 # 대시보드 (별도 프로세스)
 bun run dev       # 개발
