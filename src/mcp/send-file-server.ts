@@ -99,6 +99,46 @@ server.tool(
   }
 );
 
+const HTML_PAGE_SERVER = process.env.HTML_PAGE_SERVER;
+
+if (HTML_PAGE_SERVER) {
+  server.tool(
+    "send_html",
+    "Publish an HTML string as a temporary web page and return the public URL. Use this when you want to share rich HTML content (tables, charts, styled reports, etc.) with the user as a viewable page.",
+    { html: z.string().describe("HTML content to publish as a web page") },
+    async ({ html }) => {
+      try {
+        const res = await fetch(`${HTML_PAGE_SERVER}/pages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ html }),
+        });
+        if (!res.ok) {
+          return {
+            content: [{ type: "text", text: `Error: server returned ${res.status}` }],
+            isError: true,
+          };
+        }
+        const data = await res.json() as { uuid: string; url: string; expires_at: number };
+        const expiresDate = new Date(data.expires_at * 1000).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+        return {
+          content: [
+            {
+              type: "text",
+              text: `✅ HTML 페이지가 생성됐어요!\n🔗 URL: ${data.url}\n⏰ 만료: ${expiresDate}`,
+            },
+          ],
+        };
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `Error: ${e}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+}
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
