@@ -84,12 +84,14 @@ const IMAGE_EXTS = ["png", "jpg", "jpeg", "gif", "webp"];
 const MAX_PHOTO_SIZE = 10 * 1024 * 1024;  // 10MB for photos
 const MAX_DOC_SIZE = 50 * 1024 * 1024;    // 50MB for documents
 
-/** Send a local file as photo (if image) or document to a chat */
+/** Send a local file as photo (if image) or document to a chat.
+ *  Returns the Telegram message_id of the sent file, or null if a fallback text was sent
+ *  (file too large to upload as document). */
 export async function sendFileToChat(
   chatId: number,
   filePath: string,
   threadOpts?: TelegramBot.SendMessageOptions,
-): Promise<void> {
+): Promise<{ messageId: number } | null> {
   const fileStat = await fsPromises.stat(filePath);
   const fileName = filePath.split("/").pop() || "file";
   const ext = fileName.split(".").pop()?.toLowerCase() || "";
@@ -100,19 +102,18 @@ export async function sendFileToChat(
     // 이미지가 10MB 초과시 문서로 전송 시도
     if (isImage && fileStat.size <= MAX_DOC_SIZE) {
       const fileBuffer = await fsPromises.readFile(filePath);
-      await sendDoc(chatId, fileBuffer, threadOpts as TelegramBot.SendDocumentOptions, { filename: fileName, contentType: "application/octet-stream" });
-      return;
+      const m = await sendDoc(chatId, fileBuffer, threadOpts as TelegramBot.SendDocumentOptions, { filename: fileName, contentType: "application/octet-stream" });
+      return { messageId: m.message_id };
     }
     await sendMsg(chatId, `파일이 너무 큽니다 (${(fileStat.size / 1024 / 1024).toFixed(1)}MB, 최대 ${maxSize / 1024 / 1024}MB): ${fileName}`, threadOpts);
-    return;
+    return null;
   }
 
   const fileBuffer = await fsPromises.readFile(filePath);
-  if (isImage) {
-    await sendPhoto(chatId, fileBuffer, threadOpts as TelegramBot.SendPhotoOptions, { filename: fileName, contentType: `image/${ext === "jpg" ? "jpeg" : ext}` });
-  } else {
-    await sendDoc(chatId, fileBuffer, threadOpts as TelegramBot.SendDocumentOptions, { filename: fileName, contentType: "application/octet-stream" });
-  }
+  const m = isImage
+    ? await sendPhoto(chatId, fileBuffer, threadOpts as TelegramBot.SendPhotoOptions, { filename: fileName, contentType: `image/${ext === "jpg" ? "jpeg" : ext}` })
+    : await sendDoc(chatId, fileBuffer, threadOpts as TelegramBot.SendDocumentOptions, { filename: fileName, contentType: "application/octet-stream" });
+  return { messageId: m.message_id };
 }
 
 // --- Markdown → Telegram HTML conversion ---

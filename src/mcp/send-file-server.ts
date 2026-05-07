@@ -2,70 +2,91 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { stat, realpath } from "fs/promises";
-import { basename, extname, resolve } from "path";
-import { homedir } from "os";
+import { stat } from "node:fs/promises";
+import { basename, extname, resolve } from "node:path";
+import { genRequestId, waitForResponse, writeCommand } from "@/mcp/dm-ipc";
 
-const ALLOWED_DIR = homedir();
+const args = process.argv.slice(2);
+const userId = args.find((a) => a.startsWith("--user-id="))?.split("=")[1] || "";
+const topic = args.find((a) => a.startsWith("--topic="))?.split("=")[1] || "dm";
+if (!userId) {
+  process.stderr.write("FATAL: --user-id is required\n");
+  process.exit(1);
+}
 
-async function isAllowed(filePath: string): Promise<boolean> {
-  const normalized = resolve(filePath);
-  if (!normalized.startsWith(ALLOWED_DIR + "/") && normalized !== ALLOWED_DIR) {
-    return false;
-  }
-  // Resolve symlinks to prevent traversal attacks
+type LocalFileInfo =
+  | { ok: true; normalizedPath: string; name: string; ext: string; sizeMB: string }
+  | { ok: false; error: string };
+
+async function validateLocalFile(filePath: string): Promise<LocalFileInfo> {
+  const normalizedPath = resolve(filePath);
   try {
-    const real = await realpath(normalized);
-    return real.startsWith(ALLOWED_DIR + "/") || real === ALLOWED_DIR;
+    const stats = await stat(normalizedPath);
+    if (!stats.isFile()) return { ok: false, error: `${filePath} is not a file` };
+    return {
+      ok: true,
+      normalizedPath,
+      name: basename(filePath),
+      ext: extname(filePath).toLowerCase(),
+      sizeMB: (stats.size / (1024 * 1024)).toFixed(2),
+    };
   } catch {
-    return false;
+    return { ok: false, error: `File not found at ${filePath}` };
+  }
+}
+
+function mcpOk(text: string) {
+  return { content: [{ type: "text" as const, text }] };
+}
+function mcpError(text: string) {
+  return { content: [{ type: "text" as const, text }], isError: true as const };
+}
+
+async function sendFileViaIpc(filePath: string) {
+  const info = await validateLocalFile(filePath);
+  if (!info.ok) return mcpError(`Error: ${info.error}`);
+
+  const requestId = genRequestId();
+  writeCommand(userId, {
+    requestId,
+    action: "send_file",
+    params: { topic, file_path: info.normalizedPath },
+    timestamp: new Date().toISOString(),
+  });
+
+  try {
+    const resp = await waitForResponse(userId, requestId, 120_000);
+    if (resp.success === false || typeof resp.error === "string") {
+      return mcpError(`Error: ${resp.error || "File send failed"}`);
+    }
+    if (resp.success !== true || typeof resp.messageId !== "number") {
+      return mcpError("Error: Invalid file send response from bot");
+    }
+    const messageId = resp.messageId;
+    return mcpOk(
+      [
+        `File sent to chat: ${info.name} (${info.ext || "no extension"}, ${info.sizeMB}MB)`,
+        `Path: ${info.normalizedPath}`,
+        `Telegram message_id: ${messageId}`,
+      ].join("\n"),
+    );
+  } catch (e) {
+    return mcpError(
+      `Error: ${e instanceof Error ? e.message : "Timeout waiting for bot response"}`,
+    );
   }
 }
 
 const server = new McpServer({
   name: "send-file",
-  version: "1.0.0",
+  version: "2.0.0",
 });
 
 server.tool(
   "send_file",
   "Send a local file to the user in the chat. Use this when you want to share a file (image, document, PDF, code, etc.) with the user. The file will appear as a downloadable item in the chat.",
   { file_path: z.string().describe("Absolute path to the file to send") },
-  async ({ file_path }) => {
-    if (!await isAllowed(file_path)) {
-      return {
-        content: [{ type: "text", text: `Error: Access denied. Files must be within ${ALLOWED_DIR}` }],
-        isError: true,
-      };
-    }
-    try {
-      const stats = await stat(resolve(file_path));
-      if (!stats.isFile()) {
-        return {
-          content: [{ type: "text", text: `Error: ${file_path} is not a file` }],
-          isError: true,
-        };
-      }
-
-      const name = basename(file_path);
-      const ext = extname(file_path).toLowerCase();
-      const sizeMB = (stats.size / (1024 * 1024)).toFixed(2);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `✅ File sent to chat: ${name} (${ext}, ${sizeMB}MB)\nPath: ${file_path}`,
-          },
-        ],
-      };
-    } catch {
-      return {
-        content: [{ type: "text", text: `Error: File not found at ${file_path}` }],
-        isError: true,
-      };
-    }
-  }
+  async ({ file_path }) => sendFileViaIpc(file_path),
 );
 
 server.tool(
@@ -74,29 +95,22 @@ server.tool(
   { file_paths: z.array(z.string()).describe("Array of absolute file paths to send") },
   async ({ file_paths }) => {
     const results: string[] = [];
+    let hasError = false;
     for (const file_path of file_paths) {
-      if (!await isAllowed(file_path)) {
-        results.push(`❌ ${file_path}: access denied (outside workspace)`);
-        continue;
-      }
-      try {
-        const stats = await stat(resolve(file_path));
-        if (!stats.isFile()) {
-          results.push(`❌ ${file_path}: not a file`);
-          continue;
-        }
-        const name = basename(file_path);
-        const ext = extname(file_path).toLowerCase();
-        const sizeMB = (stats.size / (1024 * 1024)).toFixed(2);
-        results.push(`✅ ${name} (${ext}, ${sizeMB}MB) — ${file_path}`);
-      } catch {
-        results.push(`❌ ${file_path}: not found`);
+      const response = await sendFileViaIpc(file_path);
+      const text = response.content.map((c) => c.text).join("\n");
+      if ("isError" in response && response.isError) {
+        hasError = true;
+        results.push(`ERROR ${file_path}: ${text.replace(/^Error: /, "")}`);
+      } else {
+        results.push(text);
       }
     }
     return {
-      content: [{ type: "text", text: `Files sent to chat:\n${results.join("\n")}` }],
+      content: [{ type: "text" as const, text: `Files sent to chat:\n${results.join("\n\n")}` }],
+      ...(hasError ? { isError: true as const } : {}),
     };
-  }
+  },
 );
 
 const HTML_PAGE_SERVER = process.env.HTML_PAGE_SERVER;
@@ -113,29 +127,14 @@ if (HTML_PAGE_SERVER) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ html }),
         });
-        if (!res.ok) {
-          return {
-            content: [{ type: "text", text: `Error: server returned ${res.status}` }],
-            isError: true,
-          };
-        }
+        if (!res.ok) return mcpError(`Error: server returned ${res.status}`);
         const data = await res.json() as { uuid: string; url: string; expires_at: number };
         const expiresDate = new Date(data.expires_at * 1000).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
-        return {
-          content: [
-            {
-              type: "text",
-              text: `✅ HTML 페이지가 생성됐어요!\n🔗 URL: ${data.url}\n⏰ 만료: ${expiresDate}`,
-            },
-          ],
-        };
+        return mcpOk(`✅ HTML 페이지가 생성됐어요!\n🔗 URL: ${data.url}\n⏰ 만료: ${expiresDate}`);
       } catch (e) {
-        return {
-          content: [{ type: "text", text: `Error: ${e}` }],
-          isError: true,
-        };
+        return mcpError(`Error: ${e}`);
       }
-    }
+    },
   );
 }
 

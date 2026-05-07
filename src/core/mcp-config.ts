@@ -7,9 +7,9 @@ import type { AgentQueryOptions } from "@/core/types";
 
 // --- Common MCP servers (shared across DM and forum sessions) ---
 
-function getCommonMcpServers(userId: string) {
+function getCommonMcpServers(userId: string, topic: string) {
   return {
-    "send-file":            { command: BUN_BIN, args: ["run", SEND_FILE_SERVER, `--user-id=${userId}`] },
+    "send-file":            { command: BUN_BIN, args: ["run", SEND_FILE_SERVER, `--user-id=${userId}`, `--topic=${topic}`] },
     "token-stats":          { command: BUN_BIN, args: ["run", TOKEN_STATS_SERVER, `--user-id=${userId}`] },
   };
 }
@@ -21,7 +21,7 @@ export function getDmMcpServers(opts: { userId: string; groupId?: number }) {
   const { userId, groupId } = opts;
   const groupArg = groupId ? [`--group-id=${groupId}`] : [];
   return {
-    ...getCommonMcpServers(userId),
+    ...getCommonMcpServers(userId, "dm"),
     "dm-manager": { command: BUN_BIN, args: ["run", DM_MANAGER_SERVER, `--user-id=${userId}`] },
     "cron-dm": { command: BUN_BIN, args: ["run", CRON_DM_SERVER, `--user-id=${userId}`] },
     "topic-manager": { command: BUN_BIN, args: ["run", TOPIC_MANAGER_SERVER, `--user-id=${userId}`, ...groupArg] },
@@ -50,7 +50,7 @@ export function getForumMcpServers(opts: {
 }) {
   const { userId, session, depth = 0, silent = false, enabled = null, extra = {} } = opts;
   const all: Record<string, unknown> = {
-    ...getCommonMcpServers(userId),
+    ...getCommonMcpServers(userId, session),
     "session-comm": {
       command: BUN_BIN,
       args: [

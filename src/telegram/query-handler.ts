@@ -57,7 +57,7 @@ const SENSITIVE_PATH_PATTERNS = [
   /\/Library\/Keychains\//i,
 ];
 
-function isSensitivePath(filePath: string): boolean {
+export function isSensitivePath(filePath: string): boolean {
   const normalized = resolve(filePath);
   if (SENSITIVE_PATH_PATTERNS.some((p) => p.test(normalized))) return true;
   try {

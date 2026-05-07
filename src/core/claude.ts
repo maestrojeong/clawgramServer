@@ -219,24 +219,8 @@ export async function* claudeQuery(
             name: tb.name,
             input: tb.input || {},
           };
-          // Extract file paths only from MCP send tools
-          if (tb.input && (tb.name === "send_file" || tb.name === "send_files")) {
-            const filePath =
-              (tb.input.file_path as string) ||
-              (tb.input.path as string) ||
-              (tb.input.filename as string);
-            if (filePath && typeof filePath === "string") {
-              yield { type: "file", path: filePath, source: tb.name };
-            }
-            const filePaths = tb.input.file_paths as string[] | undefined;
-            if (Array.isArray(filePaths)) {
-              for (const fp of filePaths) {
-                if (typeof fp === "string") {
-                  yield { type: "file", path: fp, source: tb.name };
-                }
-              }
-            }
-          }
+          // send_file/send_files now route through MCP IPC (dm-commands "send_file" action),
+          // so the bot side delivers the file directly. No tool_use interception here.
         }
       }
       continue;

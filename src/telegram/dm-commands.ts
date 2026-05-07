@@ -1,5 +1,6 @@
-import { writeFileSync, appendFileSync, readdirSync, renameSync } from "fs";
-import { join } from "path";
+import { writeFileSync, appendFileSync, readdirSync, renameSync, realpathSync } from "fs";
+import { homedir } from "os";
+import { join, resolve } from "path";
 import { bot } from "@/telegram/client";
 import {
   getUserConfig,
@@ -10,6 +11,7 @@ import {
   setTopicModel,
   setTopicEffort,
   setTopicCwd,
+  getTopicCwd,
   setTopicMcpEnabled,
   setTopicMcpExtra,
   setTopicAgent,
@@ -21,6 +23,8 @@ import { DM_CMD_DIR, DM_RESP_DIR, withTopicPrefix } from "@/core/config";
 import { ForumTopic, getSessionInjectHandler } from "@/telegram/outbox-types";
 import { deleteTopicWithArchive } from "@/core/topic-lifecycle";
 import { acquireJsonlLines, cleanupProcessing } from "@/telegram/outbox-utils";
+import { sendFileToChat } from "@/telegram/helpers";
+import { isSensitivePath } from "@/telegram/query-handler";
 
 export { DM_CMD_DIR };
 
@@ -29,6 +33,40 @@ function writeResponse(respFile: string, data: object) {
   const tmp = respFile + ".tmp";
   writeFileSync(tmp, JSON.stringify(data));
   renameSync(tmp, respFile);
+}
+
+const HOME_DIR = homedir();
+const BLOCKED_PATH_PREFIXES = ["/etc", "/var", "/System", "/Library", "/usr", "/sbin", "/bin", "/private/etc", "/private/var"];
+
+/** Resolve a path through symlinks; falls back to plain resolve if file doesn't exist. */
+function resolveReal(p: string): string {
+  const r = resolve(p);
+  try { return realpathSync(r); } catch { return r; }
+}
+
+/** Returns true if `filePath` is allowed to be sent for the given topic.
+ *  - Forum topic with cwd: must live inside topic's cwd.
+ *  - DM or topic without cwd: must live inside HOME (and not under system-critical dirs). */
+function isFileAllowedForTopic(filePath: string, topic: string): { ok: true } | { ok: false; reason: string } {
+  if (isSensitivePath(filePath)) return { ok: false, reason: "Sensitive path blocked (env/keys/credentials)" };
+  const real = resolveReal(filePath);
+  for (const prefix of BLOCKED_PATH_PREFIXES) {
+    if (real === prefix || real.startsWith(prefix + "/")) {
+      return { ok: false, reason: `Path under blocked prefix ${prefix}` };
+    }
+  }
+  if (topic !== "dm") {
+    const topicCwd = getTopicCwd(topic);
+    if (topicCwd) {
+      const cwdReal = resolveReal(topicCwd);
+      if (real !== cwdReal && !real.startsWith(cwdReal + "/")) {
+        return { ok: false, reason: `File must be inside topic cwd: ${cwdReal}` };
+      }
+      return { ok: true };
+    }
+  }
+  if (real === HOME_DIR || real.startsWith(HOME_DIR + "/")) return { ok: true };
+  return { ok: false, reason: "File must be inside the user's home directory" };
 }
 
 export async function flushDmCommands() {
@@ -144,6 +182,41 @@ export async function flushDmCommands() {
           const agent = cmd.params.agent as AgentKind;
           const ok = setTopicAgent(withTopicPrefix(cmd.params.topic as string), agent);
           writeResponse(respFile, { success: ok, error: ok ? undefined : "Topic not found" });
+        } else if (cmd.action === "send_file") {
+          const topic = String(cmd.params.topic ?? "dm");
+          const filePath = cmd.params.file_path as string | undefined;
+          if (!filePath) {
+            writeResponse(respFile, { success: false, error: "file_path is required" });
+            continue;
+          }
+          const guard = isFileAllowedForTopic(filePath, topic);
+          if (!guard.ok) {
+            writeResponse(respFile, { success: false, error: `Access denied: ${guard.reason}` });
+            continue;
+          }
+          let chatId: number;
+          let threadOpts: { message_thread_id?: number } = {};
+          if (topic === "dm") {
+            chatId = uid;
+          } else {
+            const topicInfo = getTopicByName(withTopicPrefix(topic));
+            if (!topicInfo) {
+              writeResponse(respFile, { success: false, error: `Topic not found: ${topic}` });
+              continue;
+            }
+            chatId = topicInfo.forumGroupId;
+            threadOpts = { message_thread_id: topicInfo.messageThreadId };
+          }
+          try {
+            const sent = await sendFileToChat(chatId, filePath, threadOpts);
+            if (sent) {
+              writeResponse(respFile, { success: true, messageId: sent.messageId });
+            } else {
+              writeResponse(respFile, { success: false, error: "File too large to upload" });
+            }
+          } catch (e) {
+            writeResponse(respFile, { success: false, error: e instanceof Error ? e.message : "Send failed" });
+          }
         } else {
           writeResponse(respFile, { success: false, error: `Unknown action: ${cmd.action}` });
         }
