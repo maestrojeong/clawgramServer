@@ -22,14 +22,16 @@ function botCanManageTopics(member: AdminMemberLike): boolean {
   return false;
 }
 
-async function linkAndAnnounce(
+async function linkForumGroup(
   userId: number,
   groupId: number,
   title: string,
   canManageTopics: boolean,
+  announce: boolean,
 ): Promise<void> {
   addForumGroup(userId, groupId, title);
-  logger.info({ userId, groupId, title, canManageTopics }, "Auto-connected forum group");
+  logger.info({ userId, groupId, title, canManageTopics, announce }, "Auto-connected forum group");
+  if (!announce) return;
 
   const permissionWarning = canManageTopics
     ? ""
@@ -63,7 +65,7 @@ export async function tryAutoConnectFromPromotion(update: {
   if (!promoter || !ADMIN_USERS.has(promoter)) return false;
   if (findUserByGroupId(chat.id) !== null) return false;
 
-  await linkAndAnnounce(promoter, chat.id, chat.title ?? "", botCanManageTopics(newMember ?? {}));
+  await linkForumGroup(promoter, chat.id, chat.title ?? "", botCanManageTopics(newMember ?? {}), true);
   return true;
 }
 
@@ -86,7 +88,7 @@ export async function tryAutoConnectFromMessage(msg: TelegramBot.Message): Promi
     const senderMember = await bot.getChatMember(chat.id, senderId);
     if (senderMember.status !== "administrator" && senderMember.status !== "creator") return false;
 
-    await linkAndAnnounce(senderId, chat.id, chat.title ?? "", botCanManageTopics(botMember));
+    await linkForumGroup(senderId, chat.id, chat.title ?? "", botCanManageTopics(botMember), false);
     return true;
   } catch (e) {
     logger.debug({ err: e, groupId: chat.id, senderId }, "auto-connect lazy: getChatMember failed");
