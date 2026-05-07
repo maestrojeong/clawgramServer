@@ -8,7 +8,6 @@ import type {
   SDKToolUseSummaryMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { extractFileEvents } from "@/core/agents/file-events";
 import { CLAUDE_EXECUTABLE, getCleanEnv } from "@/core/config";
 import { logger } from "@/core/logger";
 import { getMcpServersForQuery } from "@/core/mcp-config";
@@ -143,7 +142,6 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
               }
             : undefined,
         };
-        yield* extractFileEvents(m.result, "result");
       } else {
         yield { type: "error", content: m.errors?.join("; ") || "Unknown error" };
       }
@@ -157,7 +155,6 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
         if (block.type === "text") {
           const tb = block as TextBlock;
           yield { type: "text", content: tb.text };
-          yield* extractFileEvents(tb.text, "text");
         } else if (block.type === "tool_result") {
           const trBlock = block as ToolResultBlock;
           yield {
@@ -168,15 +165,6 @@ export async function* claudeProvider(opts: AgentQueryOptions): AsyncGenerator<U
         } else if (block.type === "tool_use") {
           const tb = block as ToolUseBlock;
           yield { type: "tool_use", name: tb.name, input: tb.input || {} };
-          // Direct file path extraction from send_file tools
-          if (tb.input && (tb.name === "send_file" || tb.name === "send_files")) {
-            const fp = (tb.input.file_path as string) || (tb.input.path as string) || (tb.input.filename as string);
-            if (fp) yield { type: "file", path: fp, source: tb.name };
-            const fps = tb.input.file_paths as string[] | undefined;
-            if (Array.isArray(fps)) {
-              for (const p of fps) if (typeof p === "string") yield { type: "file", path: p, source: tb.name };
-            }
-          }
         }
       }
     }

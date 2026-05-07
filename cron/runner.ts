@@ -3,7 +3,7 @@
  * Cron job runner (TypeScript).
  *
  * Executes a Python script, captures its stdout as a prompt,
- * runs claudeQuery() (with --resume if a cron session exists), and writes
+ * runs runAgent() (with --resume if a cron session exists), and writes
  * the result to the user's cron outbox for bot.ts to pick up.
  *
  * Usage:
@@ -21,7 +21,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { claudeQuery } from "@/core/claude";
+import { runAgent } from "@/core/agents";
 import { buildTopicSystemPrompt, PROJECT_ROOT, SERVER_NAME, SESSIONS_DB, USERS_LOG_DIR } from "@/core/config";
 import { SESSION_STALE_SEC } from "@/mcp/cron/shared";
 
@@ -203,7 +203,7 @@ async function waitForTopicUnlock(timeoutMs = 300_000): Promise<boolean> {
 }
 
 // --- Outbox ---
-function writeOutbox(message: string, files?: string[], newSessionId?: string): void {
+function writeOutbox(message: string, newSessionId?: string): void {
   mkdirSync(outboxDir, { recursive: true });
   const entry: Record<string, unknown> = {
     userId,
@@ -212,7 +212,6 @@ function writeOutbox(message: string, files?: string[], newSessionId?: string): 
     message,
     timestamp: new Date().toISOString().slice(0, 19),
   };
-  if (files?.length) entry.files = files;
   if (newSessionId) entry.newCronSessionId = newSessionId;
   appendFileSync(join(outboxDir, "pending.jsonl"), `${JSON.stringify(entry)}\n`);
 }
@@ -302,14 +301,13 @@ async function runJob() {
   const cronSessionId = freshRow?.cron_session_id ?? null;
 
   let response = "";
-  const files: string[] = [];
   let newSessionId: string | undefined;
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
   let exitCode = 0;
 
   try {
-    for await (const event of claudeQuery({
+    for await (const event of runAgent({
       prompt,
       sessionId: cronSessionId,
       cwd: workDir,
@@ -327,9 +325,6 @@ async function runJob() {
         case "result":
           response = event.content;
           break;
-        case "file":
-          if (!files.includes(event.path)) files.push(event.path);
-          break;
       }
     }
   } catch (e) {
@@ -341,7 +336,7 @@ async function runJob() {
     if (!response) response = "(empty response)";
     const durationMs = Date.now() - startMs;
 
-    writeOutbox(response, files.length ? files : undefined, newSessionId);
+    writeOutbox(response, newSessionId);
     if (newSessionId) setCronSessionId(newSessionId);
     appendRunHistory({
       at: startedAt,
@@ -350,10 +345,7 @@ async function runJob() {
       output_preview: response.slice(0, 150),
     });
 
-    console.error(
-      `[runner] Done. Output written to outbox for topic '${topicName}'` +
-        (files.length ? ` (${files.length} files: ${files.join(", ")})` : " (no files)"),
-    );
+    console.error(`[runner] Done. Output written to outbox for topic '${topicName}'`);
   }
 }
 

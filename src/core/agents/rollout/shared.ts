@@ -82,7 +82,6 @@ export function extractChatPairs(
         break;
       case "tool_progress":
       case "tool_use_summary":
-      case "file":
         break;
     }
   }

@@ -12,7 +12,7 @@ Execute tasks that users ask directly.
 작업 디렉토리: {{WORKSPACE_DIR}}. 임시 파일은 tmp/에.
 
 ## Sending Files
-파일 전송 시 send_file MCP 도구 사용 + 응답에 `[FILE:/absolute/path]` 태그 포함. 파일명은 ASCII만.
+파일 전송은 send_file MCP 도구만 사용. 파일명은 ASCII만.
 
 ## Voice Messages
 음성은 Whisper STT로 변환되어 전달됨. 고유명사 오인식 주의, 문맥으로 교정.

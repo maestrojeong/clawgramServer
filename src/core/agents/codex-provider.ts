@@ -1,6 +1,5 @@
 import type { ModelReasoningEffort, SandboxMode, ThreadOptions } from "@openai/codex-sdk";
 import { Codex } from "@openai/codex-sdk";
-import { extractFileEvents } from "@/core/agents/file-events";
 import { errMsg } from "@/core/error";
 import { logger } from "@/core/logger";
 import { getMcpServersForQuery } from "@/core/mcp-config";
@@ -121,7 +120,6 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
             finalText = String(item.text ?? "");
             agentTextSoFar = finalText;
             yield { type: "text", content: finalText };
-            yield* extractFileEvents(finalText, "text");
           } else if (item.type === "mcp_tool_call") {
             const result = item.result;
             yield {
@@ -156,7 +154,6 @@ export async function* codexProvider(opts: AgentQueryOptions): AsyncGenerator<Un
                 }
               : {}),
           };
-          if (finalText) yield* extractFileEvents(finalText, "result");
           break;
         }
         case "turn.failed": {

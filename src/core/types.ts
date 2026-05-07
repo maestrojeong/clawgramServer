@@ -44,7 +44,6 @@ export type UnifiedEvent =
   | { type: "text_delta"; content: string }
   | { type: "text"; content: string }
   | { type: "result"; content: string; stopReason: string; usage?: TokenUsage }
-  | { type: "file"; path: string; source: string; origin?: "tag" | "extension" }
   | { type: "error"; content: string };
 
 /** Backward-compat alias */

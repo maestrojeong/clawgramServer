@@ -163,9 +163,4 @@ export function getCleanEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-export const FILE_EXTENSIONS_REGEX =
-  /(?:\/[^\s"'<>|*?\[\]]+\.(?:png|jpg|jpeg|gif|webp|svg|pdf|csv|xlsx|xls|json|txt|md|html|zip|py|js|ts|tsx|jsx|css|xml|yaml|yml|docx|pptx))/gi;
-
-export const FILE_TAG_REGEX = /\[FILE:(\/[^\]]+)\]/gi;
-
 // MCP server builders → src/core/mcp-config.ts

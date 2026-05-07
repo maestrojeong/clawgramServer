@@ -1,6 +1,6 @@
-import { appendFileSync, readdirSync, existsSync, realpathSync } from "fs";
+import { appendFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { sendMsg, splitMessage, sendFileToChat } from "@/telegram/helpers";
+import { sendMsg, splitMessage } from "@/telegram/helpers";
 import { USERS_LOG_DIR } from "@/core/config";
 import { getUserConfig, getTopicByName, setCronSessionForTopic } from "@/telegram/forum-sessions";
 import { logger } from "@/core/logger";
@@ -65,27 +65,7 @@ export async function flushCronOutbox() {
           setCronSessionForTopic(topicName, entry.newCronSessionId as string);
         }
 
-        // Send files first, then text message
-        const entryFiles = (entry.files || []) as string[];
-        const allowedDir = join(USERS_LOG_DIR, String(userId));
-        for (const fp of entryFiles) {
-          try {
-            if (!existsSync(fp)) {
-              logger.error({ file: fp }, "cron-outbox: File not found");
-              continue;
-            }
-            const resolvedFp = realpathSync(fp);
-            if (!resolvedFp.startsWith(allowedDir + "/") && resolvedFp !== allowedDir) {
-              logger.warn({ file: fp, allowedDir }, "cron-outbox: File outside workspace, skipping");
-              continue;
-            }
-            await sendFileToChat(topic.forumGroupId, resolvedFp, threadOpts);
-          } catch (fileErr) {
-            logger.error({ err: fileErr, file: fp }, "cron-outbox: Failed to send file");
-          }
-        }
-
-        // Send text message
+        // Files are delivered via send_file MCP IPC during the cron run, not here.
         const text = `[cron: ${entry.cronName || "unknown"}]\n${entry.message}`;
         for (const chunk of splitMessage(text)) {
           await sendMsg(topic.forumGroupId, chunk, threadOpts);

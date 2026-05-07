@@ -1,8 +1,8 @@
 import TelegramBot from "node-telegram-bot-api";
-import { mkdirSync, existsSync, readFileSync, realpathSync } from "fs";
+import { mkdirSync, readFileSync, realpathSync } from "fs";
 import { join, resolve } from "path";
 import { bot } from "@/telegram/client";
-import { sendMsg, sendHtmlMsg, sendFileToChat, splitMessage, sendSplitMsg } from "@/telegram/helpers";
+import { sendMsg, sendHtmlMsg, splitMessage, sendSplitMsg } from "@/telegram/helpers";
 import { writeLog } from "@/telegram/logging";
 import { isDebug, writeQueryState, clearQueryState } from "@/telegram/workspace";
 import { runAgent, FALLBACK_AGENT } from "@/core/agents";
@@ -392,7 +392,6 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
     let resultSent = false;
     let finalUsage: TokenUsage | undefined;
     let currentSessionId: string | null = sessionId;
-    const seenFiles = new Set<string>();
     const debug = isDebug(userId);
 
     async function flushText() {
@@ -483,7 +482,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
           await clearToolStatus();
           finalUsage = event.usage;
           if (event.content && event.content.trim()) {
-            const clean = event.content.replace(/\[FILE:\/[^\]]+\]/g, "").trim();
+            const clean = event.content.trim();
             if (clean) {
               finalResponse = clean;
               if (!silent) {
@@ -494,26 +493,6 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
                 }
               }
             }
-          }
-          break;
-        }
-
-        case "file": {
-          if (silent) break;
-          if (seenFiles.has(event.path)) break;
-          seenFiles.add(event.path);
-          if (isSensitivePath(event.path)) {
-            logger.warn({ path: event.path, userId }, "Blocked sensitive file path");
-            break;
-          }
-          try {
-            if (!existsSync(event.path)) {
-              await sendToThread(`File: ${event.path}`);
-              break;
-            }
-            await sendFileToChat(chatId, event.path, threadOpts);
-          } catch {
-            await sendToThread(`File: ${event.path}`);
           }
           break;
         }
