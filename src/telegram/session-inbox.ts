@@ -13,6 +13,7 @@ export { SESSION_INBOX_DIR };
 
 type SessionInboxEntry =
   | { type: "abort"; timestamp: string }
+  | { type: "notify"; message: string; timestamp: string }
   | {
       type: "ask";
       requestId: string;
@@ -79,6 +80,16 @@ export async function flushSessionInbox() {
           entry = { ...raw, type: "tell" } as SessionInboxEntry;
         } else {
           entry = { ...raw, type: "ask" } as SessionInboxEntry;
+        }
+
+        // notify: show message in Telegram only, no session inject
+        if (entry.type === "notify") {
+          const topic = getTopicByName(topicName);
+          if (topic) {
+            await sendSplitMsg(topic.forumGroupId, entry.message, { message_thread_id: topic.messageThreadId })
+              .catch((e) => logger.warn({ err: e, topicName }, "session-inbox: notify sendMsg failed"));
+          }
+          continue;
         }
 
         // abort signal: call registered abort handler to cancel the target topic's running query

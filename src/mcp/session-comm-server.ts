@@ -30,6 +30,21 @@ import {
   setCurrentTopicDescription,
 } from "./session-comm-utils";
 
+// --- Helpers ---
+
+/** Write a notify entry to the current topic's inbox so the bot shows it in Telegram. */
+function writeRemoteNotify(message: string): void {
+  if (!userId || !currentTopic) return;
+  try {
+    const inboxDir = join(SESSION_INBOX_DIR, userId);
+    mkdirSync(inboxDir, { recursive: true });
+    appendFileSync(
+      join(inboxDir, `${currentTopic}.jsonl`),
+      JSON.stringify({ type: "notify", message, timestamp: new Date().toISOString() }) + "\n",
+    );
+  } catch { /* best-effort */ }
+}
+
 // --- MCP Server ---
 
 const server = new McpServer({
@@ -331,6 +346,8 @@ if (!isReplyOnly) {
             const err = await res.json().catch(() => ({})) as { detail?: string };
             return { content: [{ type: "text" as const, text: `Error: 원격 전송 실패 — ${err.detail || res.statusText}` }], isError: true };
           }
+          // Show outgoing notification in current topic (mirrors local ask_session behaviour)
+          writeRemoteNotify(`[→ @${targetServer}/${targetTopic}]\n${message}`);
           return {
             content: [{
               type: "text" as const,
@@ -472,6 +489,8 @@ if (!isReplyOnly) {
             const err = await res.json().catch(() => ({})) as { detail?: string };
             return { content: [{ type: "text" as const, text: `Error: 원격 전송 실패 — ${err.detail || res.statusText}` }], isError: true };
           }
+          // Show outgoing notification in current topic
+          writeRemoteNotify(`[→ @${targetServer}/${targetTopic}]\n${message}`);
           return { content: [{ type: "text" as const, text: `"@${targetServer}/${targetTopic}" 원격 세션에 메시지를 전달했습니다.` }] };
         } catch (err: any) {
           return { content: [{ type: "text" as const, text: `Error: Hub 연결 실패 — ${err?.message}` }], isError: true };
