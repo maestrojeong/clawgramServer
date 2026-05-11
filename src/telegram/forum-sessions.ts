@@ -397,6 +397,14 @@ export function getTopicByName(name: string): ForumTopicInfo | null {
   return row ? rowToTopic(row) : null;
 }
 
+/** Get the userId who owns a topic (this server only). */
+export function getTopicUserId(name: string): number | null {
+  const row = db.query<{ user_id: string }, [string, string]>(
+    "SELECT user_id FROM topics WHERE name = ? AND server_name = ?"
+  ).get(name, SERVER_NAME);
+  return row ? Number(row.user_id) : null;
+}
+
 /** Get topic by thread ID (this server only) */
 export function getTopicByThreadId(threadId: number): ForumTopicInfo | null {
   const row = db.query<TopicRow, [number, string]>(

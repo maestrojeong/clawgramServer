@@ -7,6 +7,7 @@ import { buildPromptFromMessage, buildPromptFromMediaGroup } from "@/telegram/at
 import { handleClaudeQuery, activeQueries, AbortReason } from "@/telegram/query-handler";
 import { handleDmCommand, handleForumConnect, handleForumFork, handleForumSpawn, handleForumNew } from "@/telegram/commands";
 import { startOutboxPolling, onSessionInject, onAbortRequest } from "@/telegram/outbox";
+import { startRelayInbox } from "@/telegram/relay-inbox";
 import {
   findUserByGroupAndThread,
   findUserByGroupId,
@@ -225,6 +226,7 @@ cleanStaleQueryStates();
 
 // --- Start outbox polling ---
 const stopOutboxPolling = startOutboxPolling();
+const stopRelayInbox = startRelayInbox();
 
 // --- Handle messages ---
 bot.on("message", async (msg) => {
@@ -311,6 +313,7 @@ async function cleanup() {
     q.abortController.abort();
   });
   activeQueries.clear();
+  stopRelayInbox();
   stopOutboxPolling();
   flushSessionCache();
   await killAllPlaywright();
