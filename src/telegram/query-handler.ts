@@ -11,7 +11,7 @@ import { formatToolUse } from "@/core/agents/tool-format";
 import type { TokenUsage, EffortLevel, AgentKind } from "@/core/types";
 import { logger } from "@/core/logger";
 import { homedir } from "os";
-import { USERS_LOG_DIR } from "@/core/config";
+import { USERS_LOG_DIR, ROUTER_URL, SERVER_NAME } from "@/core/config";
 
 const HOME_DIR = homedir();
 const EXTRA_ALLOWED_CWD_PREFIXES: string[] = (process.env.ALLOWED_CWD_PREFIXES || "")
@@ -569,31 +569,49 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
     // Only silent ask_session reply forks (silent=true with a sender) inject back to sender.
     const senderName = params.from;
     if (senderName && senderName !== "user" && silent && control.abortReason === AbortReason.None && finalResponse) {
-      const senderTopic = getTopicByName(senderName);
-      if (senderTopic?.sessionId) {
-        const injectPrompt = `[${topicName} 세션에서 공유됨]\n${finalResponse}`;
-        await sendSplitMsg(senderTopic.forumGroupId, `[← ${topicName}]\n${finalResponse}`, { message_thread_id: senderTopic.messageThreadId }).catch(
-          (e) => logger.warn({ err: e }, "ask_session: failed to send response to sender topic")
-        );
-        pendingInject = {
-          params: {
-            chatId: senderTopic.forumGroupId,
-            userId,
-            topicName: senderName,
-            sessionId: senderTopic.sessionId,
-            prompt: injectPrompt,
-            messageThreadId: senderTopic.messageThreadId,
-            systemPrompt: buildTopicSystemPrompt({
-              description: getTopicDescription(senderName),
-            }),
-            from: topicName,
-            // Resume caller at the depth it was at when it called ask_session,
-            // so subsequent tell_session depth checks remain accurate.
-            depth: params.fromDepth ?? 0,
-          },
-          errorChatId: senderTopic.forumGroupId,
-          errorThreadId: senderTopic.messageThreadId,
-        };
+      // Detect remote sender: format is "server-id/topicName" (set by relay-inbox.ts)
+      const remoteFromMatch = senderName.match(/^([^/]+)\/(.+)$/);
+      if (remoteFromMatch && ROUTER_URL) {
+        // Remote ask: POST reply to Hub → source server injects it back
+        const [, sourceServer, sourceTopic] = remoteFromMatch;
+        fetch(`${ROUTER_URL}/relay/reply/${params.requestId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: finalResponse,
+            fromServer: SERVER_NAME,
+            toServer: sourceServer,
+            fromTopic: topicName,
+            sourceTopic,
+          }),
+        }).catch((e) => logger.warn({ err: e }, "ask_session: failed to POST remote reply to Hub"));
+      } else {
+        const senderTopic = getTopicByName(senderName);
+        if (senderTopic?.sessionId) {
+          const injectPrompt = `[${topicName} 세션에서 공유됨]\n${finalResponse}`;
+          await sendSplitMsg(senderTopic.forumGroupId, `[← ${topicName}]\n${finalResponse}`, { message_thread_id: senderTopic.messageThreadId }).catch(
+            (e) => logger.warn({ err: e }, "ask_session: failed to send response to sender topic")
+          );
+          pendingInject = {
+            params: {
+              chatId: senderTopic.forumGroupId,
+              userId,
+              topicName: senderName,
+              sessionId: senderTopic.sessionId,
+              prompt: injectPrompt,
+              messageThreadId: senderTopic.messageThreadId,
+              systemPrompt: buildTopicSystemPrompt({
+                description: getTopicDescription(senderName),
+              }),
+              from: topicName,
+              // Resume caller at the depth it was at when it called ask_session,
+              // so subsequent tell_session depth checks remain accurate.
+              depth: params.fromDepth ?? 0,
+            },
+            errorChatId: senderTopic.forumGroupId,
+            errorThreadId: senderTopic.messageThreadId,
+          };
+        }
       }
     }
   } catch (err) {
@@ -623,11 +641,28 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
     // If externally aborted while processing a silent ask reply, notify sender
     const senderName = params.from;
     if (control.abortReason === AbortReason.External && senderName && senderName !== "user" && silent && !pendingInject) {
-      const senderTopic = getTopicByName(senderName);
-      if (senderTopic) {
-        sendMsg(senderTopic.forumGroupId, `[← ${topicName}]\n(abort됨: 외부 중단 요청으로 응답을 받을 수 없습니다)`, {
-          message_thread_id: senderTopic.messageThreadId,
-        }).catch((e) => logger.error({ err: e }, "Failed to notify sender of aborted session"));
+      const remoteFromMatch = senderName.match(/^([^/]+)\/(.+)$/);
+      if (remoteFromMatch && ROUTER_URL) {
+        const [, sourceServer, sourceTopic] = remoteFromMatch;
+        fetch(`${ROUTER_URL}/relay/reply/${params.requestId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: "(abort됨: 외부 중단 요청으로 응답을 받을 수 없습니다)",
+            fromServer: SERVER_NAME,
+            toServer: sourceServer,
+            fromTopic: topicName,
+            sourceTopic,
+            aborted: true,
+          }),
+        }).catch((e) => logger.error({ err: e }, "Failed to notify remote sender of aborted session"));
+      } else {
+        const senderTopic = getTopicByName(senderName);
+        if (senderTopic) {
+          sendMsg(senderTopic.forumGroupId, `[← ${topicName}]\n(abort됨: 외부 중단 요청으로 응답을 받을 수 없습니다)`, {
+            message_thread_id: senderTopic.messageThreadId,
+          }).catch((e) => logger.error({ err: e }, "Failed to notify sender of aborted session"));
+        }
       }
     }
 

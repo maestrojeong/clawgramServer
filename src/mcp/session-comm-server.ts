@@ -5,7 +5,7 @@ import { z } from "zod";
 import { existsSync, appendFileSync, mkdirSync, readFileSync } from "fs";
 import { join } from "path";
 
-import { ACTIVE_QUERY_STALE_MS, USERS_LOG_DIR } from "@/core/config";
+import { ACTIVE_QUERY_STALE_MS, USERS_LOG_DIR, ROUTER_URL, SERVER_NAME } from "@/core/config";
 import { ALL_FORUM_MCP_SERVER_NAMES, REQUIRED_FORUM_MCP_SERVERS } from "@/core/mcp-config";
 import { createContextId } from "@/core/context-store";
 
@@ -53,6 +53,22 @@ server.tool(
         const desc = t.description ? `\n    description: ${t.description.slice(0, 80)}${t.description.length > 80 ? "..." : ""}` : "";
         return `- ${name}: ${status}${cron}${desc}`;
       });
+
+    // Fetch remote sessions from Hub
+    if (ROUTER_URL) {
+      try {
+        const res = await fetch(`${ROUTER_URL}/relay/sessions`);
+        if (res.ok) {
+          const remote = await res.json() as Record<string, string[]>;
+          for (const [serverId, topics] of Object.entries(remote)) {
+            if (serverId === SERVER_NAME) continue; // skip self
+            for (const topic of topics) {
+              entries.push(`- @${serverId}/${topic}: remote server`);
+            }
+          }
+        }
+      } catch { /* Hub unreachable, ignore */ }
+    }
 
     if (entries.length === 0) {
       return {
@@ -289,6 +305,43 @@ if (!isReplyOnly) {
       context_id: z.string().optional().describe("Context ID from a previous ask_session exchange. Omit for new conversations."),
     },
     async ({ to, message, context_id }) => {
+      // Remote target: @server-id/topic
+      const remoteMatch = to.match(/^@([^/]+)\/(.+)$/);
+      if (remoteMatch) {
+        const [, targetServer, targetTopic] = remoteMatch;
+        if (!ROUTER_URL) {
+          return { content: [{ type: "text" as const, text: "Error: ROUTER_URL not configured — cannot route to remote server." }], isError: true };
+        }
+        const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const contextId = context_id || createContextId();
+        try {
+          const res = await fetch(`${ROUTER_URL}/relay/ask/${encodeURIComponent(targetServer)}/${encodeURIComponent(targetTopic)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              from: currentTopic,
+              fromServer: SERVER_NAME,
+              message,
+              requestId,
+              contextId,
+              fromDepth: currentDepth,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({})) as { detail?: string };
+            return { content: [{ type: "text" as const, text: `Error: 원격 전송 실패 — ${err.detail || res.statusText}` }], isError: true };
+          }
+          return {
+            content: [{
+              type: "text" as const,
+              text: `"@${targetServer}/${targetTopic}" 원격 세션에 참조 요청을 보냈습니다.\n\ncontext_id: ${contextId}\nrequest_id: ${requestId}\n\n"${targetTopic}"의 응답이 이 세션에 자동으로 돌아옵니다.`,
+            }],
+          };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Error: Hub 연결 실패 — ${err?.message}` }], isError: true };
+        }
+      }
+
       if (message.length > MAX_MESSAGE_LENGTH) {
         return {
           content: [{ type: "text" as const, text: `Error: message too long (${message.length} chars, max ${MAX_MESSAGE_LENGTH})` }],
@@ -399,6 +452,32 @@ if (!isReplyOnly) {
       message: z.string().describe("Message to send to the target session"),
     },
     async ({ to, message }) => {
+      // Remote target: @server-id/topic
+      const remoteMatch = to.match(/^@([^/]+)\/(.+)$/);
+      if (remoteMatch) {
+        const [, targetServer, targetTopic] = remoteMatch;
+        if (!ROUTER_URL) {
+          return { content: [{ type: "text" as const, text: "Error: ROUTER_URL not configured — cannot route to remote server." }], isError: true };
+        }
+        if (currentDepth + 1 > MAX_TELL_DEPTH) {
+          return { content: [{ type: "text" as const, text: `Error: depth 한도 도달 (현재 ${currentDepth}, 최대 ${MAX_TELL_DEPTH}).` }], isError: true };
+        }
+        try {
+          const res = await fetch(`${ROUTER_URL}/relay/tell/${encodeURIComponent(targetServer)}/${encodeURIComponent(targetTopic)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ from: currentTopic, fromServer: SERVER_NAME, message, depth: currentDepth + 1 }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({})) as { detail?: string };
+            return { content: [{ type: "text" as const, text: `Error: 원격 전송 실패 — ${err.detail || res.statusText}` }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `"@${targetServer}/${targetTopic}" 원격 세션에 메시지를 전달했습니다.` }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Error: Hub 연결 실패 — ${err?.message}` }], isError: true };
+        }
+      }
+
       if (message.length > MAX_MESSAGE_LENGTH) {
         return {
           content: [{ type: "text" as const, text: `Error: message too long (${message.length} chars, max ${MAX_MESSAGE_LENGTH})` }],
