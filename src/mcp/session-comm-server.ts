@@ -5,7 +5,7 @@ import { z } from "zod";
 import { existsSync, appendFileSync, mkdirSync, readFileSync } from "fs";
 import { join } from "path";
 
-import { ACTIVE_QUERY_STALE_MS, USERS_LOG_DIR, ROUTER_URL, SERVER_NAME } from "@/core/config";
+import { ACTIVE_QUERY_STALE_MS, USERS_LOG_DIR, HTML_PAGE_SERVER, SERVER_NAME } from "@/core/config";
 import { ALL_FORUM_MCP_SERVER_NAMES, REQUIRED_FORUM_MCP_SERVERS } from "@/core/mcp-config";
 import { createContextId } from "@/core/context-store";
 
@@ -55,9 +55,9 @@ server.tool(
       });
 
     // Fetch remote sessions from Hub
-    if (ROUTER_URL) {
+    if (HTML_PAGE_SERVER) {
       try {
-        const res = await fetch(`${ROUTER_URL}/relay/sessions`);
+        const res = await fetch(`${HTML_PAGE_SERVER}/relay/sessions`);
         if (res.ok) {
           const remote = await res.json() as Record<string, string[]>;
           for (const [serverId, topics] of Object.entries(remote)) {
@@ -309,13 +309,13 @@ if (!isReplyOnly) {
       const remoteMatch = to.match(/^@([^/]+)\/(.+)$/);
       if (remoteMatch) {
         const [, targetServer, targetTopic] = remoteMatch;
-        if (!ROUTER_URL) {
-          return { content: [{ type: "text" as const, text: "Error: ROUTER_URL not configured — cannot route to remote server." }], isError: true };
+        if (!HTML_PAGE_SERVER) {
+          return { content: [{ type: "text" as const, text: "Error: HTML_PAGE_SERVER not configured — cannot route to remote server." }], isError: true };
         }
         const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const contextId = context_id || createContextId();
         try {
-          const res = await fetch(`${ROUTER_URL}/relay/ask/${encodeURIComponent(targetServer)}/${encodeURIComponent(targetTopic)}`, {
+          const res = await fetch(`${HTML_PAGE_SERVER}/relay/ask/${encodeURIComponent(targetServer)}/${encodeURIComponent(targetTopic)}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -456,14 +456,14 @@ if (!isReplyOnly) {
       const remoteMatch = to.match(/^@([^/]+)\/(.+)$/);
       if (remoteMatch) {
         const [, targetServer, targetTopic] = remoteMatch;
-        if (!ROUTER_URL) {
-          return { content: [{ type: "text" as const, text: "Error: ROUTER_URL not configured — cannot route to remote server." }], isError: true };
+        if (!HTML_PAGE_SERVER) {
+          return { content: [{ type: "text" as const, text: "Error: HTML_PAGE_SERVER not configured — cannot route to remote server." }], isError: true };
         }
         if (currentDepth + 1 > MAX_TELL_DEPTH) {
           return { content: [{ type: "text" as const, text: `Error: depth 한도 도달 (현재 ${currentDepth}, 최대 ${MAX_TELL_DEPTH}).` }], isError: true };
         }
         try {
-          const res = await fetch(`${ROUTER_URL}/relay/tell/${encodeURIComponent(targetServer)}/${encodeURIComponent(targetTopic)}`, {
+          const res = await fetch(`${HTML_PAGE_SERVER}/relay/tell/${encodeURIComponent(targetServer)}/${encodeURIComponent(targetTopic)}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ from: currentTopic, fromServer: SERVER_NAME, message, depth: currentDepth + 1 }),

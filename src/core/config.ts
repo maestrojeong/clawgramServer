@@ -32,9 +32,9 @@ export const BUN_BIN = resolve(HOME, ".bun/bin/bun");
 // topics belong to it. Required: bot exits at startup if missing.
 export const SERVER_NAME = (process.env.SERVER_NAME || "").trim();
 
-// Relay hub URL for cross-server session communication (optional)
+// HTML page server URL — shared by send_html MCP and relay hub (optional)
 // e.g. http://3.34.44.233
-export const ROUTER_URL = (process.env.ROUTER_URL || "").trim();
+export const HTML_PAGE_SERVER = (process.env.HTML_PAGE_SERVER || "").trim();
 
 /** Returns the prefix used to tag topics owned by this server, e.g. "[mac1] ". */
 export function topicPrefix(): string {

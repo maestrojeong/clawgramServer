@@ -11,7 +11,7 @@ import { formatToolUse } from "@/core/agents/tool-format";
 import type { TokenUsage, EffortLevel, AgentKind } from "@/core/types";
 import { logger } from "@/core/logger";
 import { homedir } from "os";
-import { USERS_LOG_DIR, ROUTER_URL, SERVER_NAME } from "@/core/config";
+import { USERS_LOG_DIR, HTML_PAGE_SERVER, SERVER_NAME } from "@/core/config";
 
 const HOME_DIR = homedir();
 const EXTRA_ALLOWED_CWD_PREFIXES: string[] = (process.env.ALLOWED_CWD_PREFIXES || "")
@@ -571,10 +571,10 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
     if (senderName && senderName !== "user" && silent && control.abortReason === AbortReason.None && finalResponse) {
       // Detect remote sender: format is "server-id/topicName" (set by relay-inbox.ts)
       const remoteFromMatch = senderName.match(/^([^/]+)\/(.+)$/);
-      if (remoteFromMatch && ROUTER_URL) {
+      if (remoteFromMatch && HTML_PAGE_SERVER) {
         // Remote ask: POST reply to Hub → source server injects it back
         const [, sourceServer, sourceTopic] = remoteFromMatch;
-        fetch(`${ROUTER_URL}/relay/reply/${params.requestId}`, {
+        fetch(`${HTML_PAGE_SERVER}/relay/reply/${params.requestId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -642,9 +642,9 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
     const senderName = params.from;
     if (control.abortReason === AbortReason.External && senderName && senderName !== "user" && silent && !pendingInject) {
       const remoteFromMatch = senderName.match(/^([^/]+)\/(.+)$/);
-      if (remoteFromMatch && ROUTER_URL) {
+      if (remoteFromMatch && HTML_PAGE_SERVER) {
         const [, sourceServer, sourceTopic] = remoteFromMatch;
-        fetch(`${ROUTER_URL}/relay/reply/${params.requestId}`, {
+        fetch(`${HTML_PAGE_SERVER}/relay/reply/${params.requestId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
