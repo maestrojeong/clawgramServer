@@ -10,7 +10,7 @@
  */
 import { mkdirSync, appendFileSync } from "fs";
 import { join } from "path";
-import { HTML_PAGE_SERVER, SERVER_NAME, SESSION_INBOX_DIR } from "@/core/config";
+import { RELAY_SERVER_URL, SERVER_NAME, SESSION_INBOX_DIR } from "@/core/config";
 import { logger } from "@/core/logger";
 import { getTopicNames, getTopicUserId, getTopicByName } from "@/telegram/forum-sessions";
 
@@ -19,10 +19,10 @@ let _currentController: AbortController | null = null;
 
 /** Push current topic list to Hub. Call whenever topics are created/deleted. */
 export async function syncTopicsToHub(): Promise<void> {
-  if (!HTML_PAGE_SERVER || !SERVER_NAME) return;
+  if (!RELAY_SERVER_URL || !SERVER_NAME) return;
   try {
     const topics = getTopicNames();
-    await fetch(`${HTML_PAGE_SERVER}/relay/sessions/${SERVER_NAME}`, {
+    await fetch(`${RELAY_SERVER_URL}/relay/sessions/${SERVER_NAME}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ topics }),
@@ -34,7 +34,7 @@ export async function syncTopicsToHub(): Promise<void> {
 
 async function registerWithHub(): Promise<void> {
   const topics = getTopicNames();
-  await fetch(`${HTML_PAGE_SERVER}/relay/register`, {
+  await fetch(`${RELAY_SERVER_URL}/relay/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ serverId: SERVER_NAME, topics }),
@@ -138,7 +138,7 @@ async function connectSSE(): Promise<void> {
   try {
     await registerWithHub();
 
-    const res = await fetch(`${HTML_PAGE_SERVER}/relay/stream/${SERVER_NAME}`, {
+    const res = await fetch(`${RELAY_SERVER_URL}/relay/stream/${SERVER_NAME}`, {
       signal: _currentController.signal,
       headers: { Accept: "text/event-stream" },
     });
@@ -183,8 +183,8 @@ async function connectSSE(): Promise<void> {
 
 /** Start relay inbox. Returns a cleanup function. */
 export function startRelayInbox(): () => void {
-  if (!HTML_PAGE_SERVER || !SERVER_NAME) {
-    logger.info("relay: HTML_PAGE_SERVER not set, relay inbox disabled");
+  if (!RELAY_SERVER_URL || !SERVER_NAME) {
+    logger.info("relay: RELAY_SERVER_URL not set, relay inbox disabled");
     return () => {};
   }
 

@@ -34,7 +34,7 @@ export const SERVER_NAME = (process.env.SERVER_NAME || "").trim();
 
 // HTML page server URL — shared by send_html MCP and relay hub (optional)
 // e.g. http://3.34.44.233
-export const HTML_PAGE_SERVER = (process.env.HTML_PAGE_SERVER || "").trim();
+export const RELAY_SERVER_URL = (process.env.RELAY_SERVER_URL || "").trim();
 
 /** Returns the prefix used to tag topics owned by this server, e.g. "[mac1] ". */
 export function topicPrefix(): string {

@@ -113,16 +113,16 @@ server.tool(
   },
 );
 
-const HTML_PAGE_SERVER = process.env.HTML_PAGE_SERVER;
+const RELAY_SERVER_URL = process.env.RELAY_SERVER_URL;
 
-if (HTML_PAGE_SERVER) {
+if (RELAY_SERVER_URL) {
   server.tool(
     "send_html",
     "Publish an HTML string as a temporary web page and return the public URL. Use this when you want to share rich HTML content (tables, charts, styled reports, etc.) with the user as a viewable page.",
     { html: z.string().describe("HTML content to publish as a web page") },
     async ({ html }) => {
       try {
-        const res = await fetch(`${HTML_PAGE_SERVER}/pages`, {
+        const res = await fetch(`${RELAY_SERVER_URL}/pages`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ html }),
