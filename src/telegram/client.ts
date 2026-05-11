@@ -1,6 +1,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import { logger } from "@/core/logger";
 import { SERVER_NAME } from "@/core/config";
+import { cleanupZombiePlaywright } from "@/core/playwright/manager";
 
 // --- Config ---
 export const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -26,6 +27,8 @@ export const ADMIN_USERS: Set<number> = new Set(
 if (ADMIN_USERS.size === 0) {
   logger.warn("TELEGRAM_ADMIN_USERS not set. No one can use this bot.");
 }
+
+cleanupZombiePlaywright();
 
 export const bot = new TelegramBot(TOKEN, { polling: true });
 

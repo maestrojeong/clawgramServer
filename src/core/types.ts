@@ -57,7 +57,7 @@ export interface AgentQueryOptions {
   systemPrompt: string;
   userId?: string;
   session?: string;
-  sessionType?: "dm" | "forum" | "ephemeral";
+  sessionType?: "dm" | "forum";
   abortController?: AbortController;
   model?: string;
   depth?: number;
@@ -69,6 +69,7 @@ export interface AgentQueryOptions {
   groupId?: number;
   isCron?: boolean;
   advisorEnabled?: boolean;
+  playwrightPort?: number;
 }
 
 /** Backward-compat alias */

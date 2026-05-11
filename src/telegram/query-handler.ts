@@ -6,6 +6,7 @@ import { sendMsg, sendHtmlMsg, splitMessage, sendSplitMsg } from "@/telegram/hel
 import { writeLog } from "@/telegram/logging";
 import { isDebug, writeQueryState, clearQueryState } from "@/telegram/workspace";
 import { runAgent, FALLBACK_AGENT } from "@/core/agents";
+import { ensurePlaywright } from "@/core/playwright/manager";
 import { formatToolUse } from "@/core/agents/tool-format";
 import type { TokenUsage, EffortLevel, AgentKind } from "@/core/types";
 import { logger } from "@/core/logger";
@@ -81,7 +82,7 @@ function attachFooterToChunks(chunks: string[], footer: string | null, limit = 4
 }
 
 function buildConfigFooter(topicName: string, sessionType: string | undefined): string | null {
-  if (sessionType === "dm" || sessionType === "ephemeral") return null;
+  if (sessionType === "dm") return null;
   const topic = getTopicByName(topicName);
   if (!topic) return null;
   const agent = topic.agent;
@@ -129,7 +130,7 @@ interface OutputParams {
   messageThreadId?: number;
   systemPrompt?: string;
   cwd?: string;
-  sessionType?: "dm" | "forum" | "ephemeral";
+  sessionType?: "dm" | "forum";
   model?: string;
   silent?: boolean;
   effort?: EffortLevel;
@@ -364,7 +365,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
   }
 
   try {
-    const topicCwd = params.sessionType !== "dm" && params.sessionType !== "ephemeral"
+    const topicCwd = params.sessionType !== "dm"
       ? getTopicCwd(topicName)
       : null;
     const rawCwd = expandHome(params.cwd ?? null) || expandHome(topicCwd) || homedir();
@@ -375,16 +376,32 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
     mkdirSync(userCwd, { recursive: true });
 
     const mcpConfig =
-      params.sessionType !== "dm" && params.sessionType !== "ephemeral"
+      params.sessionType !== "dm"
         ? getTopicMcpConfig(topicName)
         : { enabled: null, extra: {} };
 
     // Load agent: explicit override > DB value for forum topics > fallback
     const agent: AgentKind =
       params.agent ??
-      (params.sessionType !== "dm" && params.sessionType !== "ephemeral"
+      (params.sessionType !== "dm"
         ? getTopicAgent(topicName)
         : FALLBACK_AGENT);
+
+    // Spawn a Playwright MCP SSE server for this (user, topic) — only if the
+    // topic actually wants it. DM always gets it; forum topics opt-in via
+    // mcpEnabled. Falling back to stdio (no port) keeps the MCP config valid
+    // even if spawn fails.
+    const wantsPlaywright =
+      params.sessionType === "dm" ||
+      (mcpConfig.enabled?.includes("playwright") ?? false);
+    let playwrightPort: number | undefined;
+    if (wantsPlaywright) {
+      try {
+        playwrightPort = await ensurePlaywright(String(userId), topicName);
+      } catch (e) {
+        logger.warn({ err: e, userId, topicName }, "ensurePlaywright failed, falling back to stdio");
+      }
+    }
 
     let textBuffer = "";
     let lastPreToolText = "";
@@ -422,6 +439,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
       effort: params.effort,
       mcpEnabled: mcpConfig.enabled,
       mcpExtra: mcpConfig.extra,
+      playwrightPort,
     })) {
       if (control.abortReason !== AbortReason.None) break;
 
@@ -431,9 +449,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
 
         case "session":
           currentSessionId = event.sessionId;
-          if (params.sessionType === "ephemeral") {
-            // Ephemeral sessions — don't persist session ID
-          } else if (params.sessionType === "dm") {
+          if (params.sessionType === "dm") {
             setDmSessionId(userId, event.sessionId);
           } else if (!silent) {
             setSessionForTopic(topicName, event.sessionId);
@@ -539,7 +555,7 @@ export async function handleClaudeQuery(params: HandleClaudeQueryParams) {
         cacheReadInputTokens: finalUsage.cacheReadInputTokens,
       }, "Claude token usage");
       recordUsage(userId, topicName, finalUsage);
-      if (params.sessionType !== "dm" && params.sessionType !== "ephemeral" && !silent) {
+      if (params.sessionType !== "dm" && !silent) {
         checkQueryUsageAlert(userId, topicName, finalUsage);
       }
     }

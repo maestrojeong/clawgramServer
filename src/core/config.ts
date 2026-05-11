@@ -73,10 +73,24 @@ export const PROGRESS_DIR = resolve(RUN_DIR, "progress");
 export const DM_CMD_DIR = resolve(RUN_DIR, "dm-commands");
 export const DM_RESP_DIR = resolve(RUN_DIR, "dm-responses");
 export const SESSION_INBOX_DIR = resolve(RUN_DIR, "session-inbox");
+export const PLAYWRIGHT_PORTS_DIR = resolve(RUN_DIR, "playwright-ports");
 mkdirSync(PROGRESS_DIR, { recursive: true });
 mkdirSync(DM_CMD_DIR, { recursive: true });
 mkdirSync(DM_RESP_DIR, { recursive: true });
 mkdirSync(SESSION_INBOX_DIR, { recursive: true });
+mkdirSync(PLAYWRIGHT_PORTS_DIR, { recursive: true });
+
+// --- Playwright MCP ---
+export const PLAYWRIGHT_PROFILES_DIR = resolve(DATA_DIR, "playwright");
+export const PLAYWRIGHT_MCP_BIN = resolve(PROJECT_ROOT, "node_modules/.bin/playwright-mcp");
+
+function parsePortEnv(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 && n < 65536 ? n : fallback;
+}
+export const PLAYWRIGHT_BASE_PORT = parsePortEnv(process.env.PLAYWRIGHT_BASE_PORT, 9100);
+export const PLAYWRIGHT_MAX_PORT = parsePortEnv(process.env.PLAYWRIGHT_MAX_PORT, 9499);
 
 /** Stale threshold for active-query state files (crash recovery) */
 export const ACTIVE_QUERY_STALE_MS = 10 * 60 * 1000; // 10 minutes

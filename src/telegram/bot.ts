@@ -21,6 +21,7 @@ import {
 import { tryAutoConnectFromPromotion, tryAutoConnectFromMessage } from "@/telegram/auto-connect";
 import { USERS_LOG_DIR, DM_SYSTEM_PROMPT, buildTopicSystemPrompt } from "@/core/config";
 import { logger } from "@/core/logger";
+import { killAllPlaywright } from "@/core/playwright/manager";
 
 // Fail fast if required env vars are missing
 for (const key of ["WHISPER_BIN", "FFMPEG_BIN"] as const) {
@@ -312,6 +313,7 @@ async function cleanup() {
   activeQueries.clear();
   stopOutboxPolling();
   flushSessionCache();
+  await killAllPlaywright();
   await bot.stopPolling();
   process.exit(0);
 }
