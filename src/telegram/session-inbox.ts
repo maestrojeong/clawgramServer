@@ -76,6 +76,8 @@ export async function flushSessionInbox() {
         let entry: SessionInboxEntry;
         if (raw.type === "abort") {
           entry = raw as SessionInboxEntry;
+        } else if (raw.type === "notify") {
+          entry = raw as SessionInboxEntry;
         } else if (raw.command || raw.type === "tell") {
           entry = { ...raw, type: "tell" } as SessionInboxEntry;
         } else {
